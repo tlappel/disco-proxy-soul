@@ -1,0 +1,11 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+data/
+personas/*
+!personas/example/
+!personas/example/**
+.idea/
+.vscode/

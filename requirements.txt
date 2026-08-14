@@ -1,0 +1,7 @@
+# Standalone v2 host. No voice-channel extras (those are parked).
+discord.py>=2.4
+python-dotenv
+aiohttp
+openai
+anthropic
+tzdata

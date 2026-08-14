@@ -1,0 +1,9 @@
+{
+  "journal_threshold": 0.7,
+  "compression_style": "specific, personal, and concise",
+  "remember": [
+    "durable preferences",
+    "decisions",
+    "important project context"
+  ]
+}
