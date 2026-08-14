@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import discord
 from discord import app_commands
-
+from disco_proxy_soul.adapters.gladia_pipe import GladiaStreamingSink
 from ..app import CompanionApp
 
 
@@ -349,3 +350,29 @@ def register_commands(tree: app_commands.CommandTree, app: CompanionApp) -> None
             "Outreach reset. Count is 0 and silence timer is clear.",
             ephemeral=True,
         )
+    @tree.command(name="start_voice", description="Start real-time AI voice listening")
+    async def start_voice(interaction: discord.Interaction):
+        if not interaction.user.voice:
+            return await interaction.response.send_message("Join a voice channel first!", ephemeral=True)
+        
+        channel = interaction.user.voice.channel
+        guild = interaction.guild
+        
+        # Connect with the voice receive client protocol
+        if guild.voice_client:
+            vc = guild.voice_client
+            if vc.channel != channel:
+                await vc.move_to(channel)
+        else:
+            vc = await channel.connect(cls=voice_recv.VoiceRecvClient)
+        
+        loop = asyncio.get_running_loop()
+        
+        # 'self' refers to your bot app instance. 
+        # This securely ties Gladia's final text output to the new method we added above.
+        ai_callback = lambda user_id, text: app.handle_voice_input(guild, user_id, text)
+
+        sink = GladiaStreamingSink(loop, ai_callback=ai_callback)
+        vc.listen(sink)
+        
+        await interaction.response.send_message("AI companion joined the channel and is listening!")
