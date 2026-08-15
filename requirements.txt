@@ -5,3 +5,6 @@ aiohttp
 openai
 anthropic
 tzdata
+asyncio
+websockets
+json
