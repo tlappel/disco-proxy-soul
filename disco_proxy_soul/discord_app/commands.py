@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
+import asyncioS
 import discord
 from discord import app_commands
 from disco_proxy_soul.adapters.gladia_pipe import GladiaStreamingSink
@@ -323,7 +323,7 @@ def register_commands(tree: app_commands.CommandTree, app: CompanionApp) -> None
     async def slash_reach(interaction: discord.Interaction) -> None:
         gate = app.outreach.status()
         data = app.outreach.data
-        msg = (
+        msg = (S
             f"**Outreach Status**\n"
             f"Enabled: {app.outreach.enabled}\n"
             f"Gate status: {gate['status']} — {gate['reason']}\n"

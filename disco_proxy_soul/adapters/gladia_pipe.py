@@ -1,7 +1,7 @@
 import asyncio
 import json
 import websockets
-import discord
+import discordS
 from discord.ext import voice_recv
 
 GLADIA_API_KEY = "your_gladia_api_key_here"

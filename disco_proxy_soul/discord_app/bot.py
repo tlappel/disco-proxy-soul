@@ -101,6 +101,45 @@ def build_bot(app: CompanionApp) -> discord.Client:
         if sent:
             message_index[str(message.channel.id)][str(sent.id)] = (store_text, reply)
 
+    # 1. Add this method to your main bot class alongside on_message
+    async def handle_voice_input(self, guild: discord.Guild, user_id: int, text: str):
+        """Bridges the Gladia voice transcription into the existing AI respond logic."""
+        vc = guild.voice_client
+        if not vc or not vc.is_connected():
+            return
+
+        # Look up who is speaking to log or format their text
+        member = guild.get_member(user_id)
+        display_name = member.display_name if member else f"User {user_id}"
+        
+        # Format the input display text (similar to how on_message does it)
+        display_text = f"[{display_name}]: {text}"
+        print(f"[VOICE CHAT] {display_name}: {text}")
+
+        try:
+            # Use the voice channel ID as the session key so memory isolates per voice room
+            channel_id_str = str(vc.channel.id)
+            
+            # Call your existing respond method natively!
+            # It handles history, system prompts, and returns a clean text string.
+            reply = await self.respond(channel_id_str, display_text, parts=[])
+            print(f"[AI Voice Reply]: {reply}")
+
+            # Pass the AI text output to your TTS player
+            await self.speak_in_voice_channel(vc, reply)
+
+        except Exception as e:
+            print(f"Error in voice companion pipeline: {e}")
+
+    # 2. Add your placeholder for Text-to-Speech playback
+    async def speak_in_voice_channel(self, vc, text: str):
+        """Converts the text response to audio and plays it in the voice channel."""
+        # TODO: Connect an engine like ElevenLabs, Edge-TTS, or Kokoro here.
+        # audio_source = await your_tts_engine.generate(text)
+        # vc.play(audio_source)
+        pass
+
+
     @client.event
     async def on_reaction_add(reaction: discord.Reaction, user: discord.User) -> None:
         if user == client.user:
