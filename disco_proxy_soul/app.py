@@ -94,11 +94,7 @@ class CompanionApp:
             cheap_model=config.cheap_ref()[1],
             catalog=catalog_for(config),
         )
-        policy_threshold = persona.memory_policy.get("journal_threshold")
-        if policy_threshold is not None:
-            app.journal_threshold = float(policy_threshold)
-        else:
-            app.journal_threshold = config.journal_threshold
+        app.journal_threshold = config.journal_threshold
         return app
 
     def scope(self, channel_id: str) -> Scope:

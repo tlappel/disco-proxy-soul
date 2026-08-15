@@ -57,23 +57,68 @@ Then:
 python -m disco_proxy_soul
 ```
 
+Private keys and personas can live outside this folder. Set `ENV_FILE` to
+that `.env`, plus `PERSONA_DIR` / `DATA_DIR`. Do not commit a private
+`companion-private/` tree; it is gitignored if you keep one here.
+
 Do not run two processes with the same Discord token.
 
 ## Persona packages
 
-A persona is a directory, not code.
+A persona is a folder of files, not code. The host reads that folder. A
+private companion can live anywhere; point `PERSONA_DIR` at it. Do not put
+private identity files in this repo.
+
+What ships in `personas/example/`:
 
 ```
 personas/example/
-  persona.md           # identity — required
-  persona.json         # companion_name, partner_name, always-on docs
-  voice.md             # optional writing voice
-  facts.seed.json      # seed facts (copied into data/ on first run)
-  memory_policy.json   # journal threshold, what to remember
-  docs/                # optional reference markdown
+  identity.md          # who they are — required
+  manifest.json        # names, optional character card, which docs are always-on
+  voice.md             # how they write (host default if you omit this)
+  facts.seed.json      # durable facts about you (copied into data/ on first run)
+  docs/
+    shared-context.md  # listed as always-on in the manifest
 ```
 
-Point `PERSONA_DIR` at any folder, including one that never lives in git.
+Older names `persona.md` and `persona.json` still work.
+
+### Adding extras
+
+Drop a `.md` file, then `/reload-docs` (or restart). Two equivalent hooks:
+
+**Folders you create** (the example does not ship these; make them if you want):
+
+| You create | Host treats those files as |
+|---|---|
+| `docs/always/` | Always in the prompt |
+| `docs/presence/` | Loaded only while `/presence` is on |
+| `docs/` (loose file) | Library. Listed in `/docs`, not sent to the model |
+
+**Or the manifest**, if you would rather leave the file where it is:
+
+```json
+{
+  "always_on_docs": ["shared-context.md"],
+  "layers": {
+    "life.md": { "mode": "always_on" },
+    "docs/intimate-presence.md": { "mode": "presence" }
+  }
+}
+```
+
+If both are set, the manifest wins.
+
+`/presence` is a toggle for whatever you put in the presence slot. Intimate
+register is one use; it does not have to be. `/recall` searches **memories**,
+not these files.
+
+| Slot | In the prompt? |
+|---|---|
+| identity, voice, character card | Every turn |
+| always-on docs | Every turn |
+| presence docs | Only while `/presence` is on |
+| library docs | No — visible in `/docs` until you promote them |
 
 Data files are written to `DATA_DIR` as `{persona_id}_history.json`,
 `{persona_id}_memories.json`, and so on.
@@ -91,7 +136,7 @@ Data files are written to `DATA_DIR` as `{persona_id}_history.json`,
 | `/reflect` | Ask the companion to read facts / journal / memories / docs |
 | `/docs` | List or view reference docs |
 | `/reload-docs` | Reload the persona package from disk |
-| `/presence` | Toggle extra (non-always-on) docs into context |
+| `/presence` | Toggle the presence module (whatever you put in that slot) |
 | `/moment` | Save a moment in your words |
 | `/prune` | Compress the current window into a session brief |
 | `/redist` | Re-distill the memory archive |

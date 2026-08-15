@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from .memory.contracts import MemoryRecord
 from .memory.facts import FactStore
-from .persona.schema import PersonaPackage
+from .persona.schema import PersonaDocument, PersonaPackage
 
 
 def build_system_prompt(
@@ -17,27 +17,37 @@ def build_system_prompt(
 ) -> str:
     partner = persona.partner_name
     parts = [persona.identity.strip()]
+    if persona.room_note:
+        parts.append("[ROOM]\n" + persona.room_note)
     if persona.voice:
         parts.append("[VOICE]\n" + persona.voice.strip())
+
+    card = persona.character.format_card()
+    if card:
+        parts.append("[CHARACTER]\n" + card)
+    if persona.character.example_lines:
+        examples = "\n".join(f"- {line}" for line in persona.character.example_lines)
+        parts.append(
+            "[HOW YOU SOUND]\n"
+            "Examples of your voice — match this grain, do not recite them:\n"
+            + examples
+        )
 
     facts_text = facts.format()
     if facts_text:
         parts.append(f"[{partner.upper()} — what you know]\n{facts_text}")
 
     always_on = _docs_block(
-        persona,
-        names=persona.always_on_docs,
-        heading="[SHARED CONTEXT — what you already know together]",
+        persona.documents_by_mode("always_on"),
+        heading="[ALWAYS ON — who you are, and what stays with you]",
     )
     if always_on:
         parts.append(always_on)
 
     if presence:
         extra = _docs_block(
-            persona,
-            names=None,
-            exclude=persona.always_on_docs,
-            heading="[REFERENCE DOCS — context that stays with you]",
+            persona.documents_by_mode("presence"),
+            heading="[PRESENCE — the module they turned on]",
         )
         if extra:
             parts.append(extra)
@@ -62,21 +72,13 @@ def build_system_prompt(
 
 
 def _docs_block(
-    persona: PersonaPackage,
+    documents: tuple[PersonaDocument, ...],
     *,
-    names: tuple[str, ...] | None,
     heading: str,
-    exclude: tuple[str, ...] = (),
 ) -> str:
-    docs = persona.document_map()
     selected: list[str] = []
-    for name, content in docs.items():
-        if names is not None and name not in names:
-            continue
-        if name in exclude:
-            continue
-        title = name.replace(".md", "").replace("-", " ").replace("_", " ").title()
-        selected.append(f"## {title}\n{content}")
+    for doc in documents:
+        selected.append(f"## {doc.display_title()}\n{doc.content}")
     if not selected:
         return ""
     return heading + "\n\n" + "\n\n---\n\n".join(selected)

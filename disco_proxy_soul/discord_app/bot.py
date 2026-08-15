@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections import defaultdict
 
 import aiohttp
@@ -170,12 +171,16 @@ async def _outreach_loop(client: discord.Client, app: CompanionApp) -> None:
 
 
 def run() -> None:
-    load_dotenv()
+    extra_env = os.getenv("ENV_FILE", "").strip()
+    if extra_env:
+        load_dotenv(extra_env, override=False)
+    load_dotenv(override=False)
     config = RuntimeConfig.from_env()
     if not config.discord_token:
         raise SystemExit(
             "Missing DISCORD_TOKEN.\n"
-            "Copy .env.v2.example to .env and fill DISCORD_TOKEN plus a provider key "
+            "Set ENV_FILE to your private .env, or copy .env.example to .env "
+            "and fill DISCORD_TOKEN plus a provider key "
             "(XAI_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY)."
         )
     if not (config.xai_api_key or config.anthropic_api_key or config.openai_api_key):
