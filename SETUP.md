@@ -201,6 +201,9 @@ In the watch channel (or a DM, or @ them), say hello.
 Type `/` and look for `/status`. The first time, Discord sometimes needs a
 client restart before slash commands appear.
 
+`/moment` saves a highlight in your words. `/moments` shows those plus
+ones the host scored. `/journal` is theirs — they write it; it can be empty.
+
 Do not run this twice at once with the same bot token. They will answer
 everything twice.
 

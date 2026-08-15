@@ -25,6 +25,7 @@ def register_commands(tree: app_commands.CommandTree, app: CompanionApp) -> None
             f"Model: `{app.primary_model}`\n"
             f"Recent messages: {len(history)}/{app.config.max_recent}\n"
             f"Memory chunks: {len(memories)}\n"
+            f"Moments: {app.moments.entry_count()}\n"
             f"Journal entries: {app.journal.entry_count()}\n"
             f"Facts last updated: {str(facts.get('last_updated', 'never'))[:10]}\n"
             f"Persona extras: {counts['always_on']} always-on, "
@@ -141,11 +142,25 @@ def register_commands(tree: app_commands.CommandTree, app: CompanionApp) -> None
             lines.append(f"   {record.summary[:120]}...\n")
         await interaction.response.send_message("\n".join(lines)[:2000], ephemeral=True)
 
-    @tree.command(name="journal", description="Show recent journal entries")
+    @tree.command(name="moments", description="Show host and partner highlights")
+    async def slash_moments(interaction: discord.Interaction) -> None:
+        excerpt = app.moments.read_tail()
+        if not excerpt:
+            await interaction.response.send_message(
+                "No moments yet. /moment and significant compressions land here.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(f"**Moments (recent)**\n{excerpt}", ephemeral=True)
+
+    @tree.command(name="journal", description=f"Show {companion}'s own journal")
     async def slash_journal(interaction: discord.Interaction) -> None:
         excerpt = app.journal.read_tail()
         if not excerpt:
-            await interaction.response.send_message("No journal entries yet.", ephemeral=True)
+            await interaction.response.send_message(
+                f"No journal entries yet. This file is {companion}'s — they write it.",
+                ephemeral=True,
+            )
             return
         await interaction.response.send_message(f"**Journal (recent)**\n{excerpt}", ephemeral=True)
 
@@ -159,6 +174,7 @@ def register_commands(tree: app_commands.CommandTree, app: CompanionApp) -> None
     @app_commands.choices(topic=[
         app_commands.Choice(name="facts", value="facts"),
         app_commands.Choice(name="journal", value="journal"),
+        app_commands.Choice(name="moments", value="moments"),
         app_commands.Choice(name="memories", value="memories"),
         app_commands.Choice(name="docs", value="docs"),
     ])
@@ -172,8 +188,16 @@ def register_commands(tree: app_commands.CommandTree, app: CompanionApp) -> None
         elif topic.value == "journal":
             raw = app.journal.read_tail(8000)
             data = (
-                f"Here are your most recent journal entries:\n\n{raw}"
-                if raw else "You don't have any journal entries yet."
+                f"Here are your own journal entries:\n\n{raw}"
+                if raw
+                else "Your journal is empty. You write it with keep_journal."
+            )
+        elif topic.value == "moments":
+            raw = app.moments.read_tail(8000)
+            data = (
+                f"Here are the recent moments (host or {partner} highlights, not your journal):\n\n{raw}"
+                if raw
+                else "No moments yet. Those are host or partner highlights, not your journal."
             )
         elif topic.value == "memories":
             mems = await app.memory.list(app.scope(ckey))
@@ -311,7 +335,8 @@ def register_commands(tree: app_commands.CommandTree, app: CompanionApp) -> None
         app_commands.Choice(name="memories — working set", value="memories"),
         app_commands.Choice(name="archive — permanent record", value="archive"),
         app_commands.Choice(name="facts — what I know", value="facts"),
-        app_commands.Choice(name="journal — significant moments", value="journal"),
+        app_commands.Choice(name="moments — host and partner highlights", value="moments"),
+        app_commands.Choice(name="journal — companion keep", value="journal"),
         app_commands.Choice(name="saved — pinned exchanges", value="saved"),
         app_commands.Choice(name="history — all channel windows", value="history"),
     ])

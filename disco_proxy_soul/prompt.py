@@ -14,6 +14,7 @@ def build_system_prompt(
     recall_source: str = "automatic",
     recall_query: str = "",
     presence: bool = False,
+    journal_excerpt: str = "",
 ) -> str:
     partner = persona.partner_name
     parts = [persona.identity.strip()]
@@ -67,6 +68,16 @@ def build_system_prompt(
                 heading = "[WHAT YOU REMEMBER — relevant to right now]"
                 intro = "These memories were surfaced because this thread may connect to them."
             parts.append(f"{heading}\n{intro}\n\n{summaries}")
+
+    parts.append(
+        "[JOURNAL]\n"
+        "Your journal is yours. Use keep_journal when something is worth "
+        "keeping in your own hand. Continuity does not depend on this — "
+        "memories (searchable chunks) and moments (highlights the host or "
+        f"{partner} saved) still happen if you never write. You do not write moments."
+    )
+    if journal_excerpt.strip():
+        parts.append("[YOUR JOURNAL — recent]\n" + journal_excerpt.strip())
 
     return "\n\n".join(part for part in parts if part)
 

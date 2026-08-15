@@ -16,7 +16,7 @@ coding background. The rest of this file is the short version.
 - Talks in a watch channel, DMs, mentions, and replies
 - Keeps a rolling conversation window and compresses older turns into memories
 - Recalls relevant memories after a silence gap (or via `/recall`)
-- Holds durable facts, a journal, and pinned exchanges
+- Holds durable facts, host/partner moments, her journal, and pinned exchanges
 - Optional outreach: the companion can speak first after quiet-hour and
   budget checks, if a cheap model judges there is something worth saying
 - `/model` lists whatever providers you have keys for
@@ -121,19 +121,23 @@ not these files.
 | library docs | No — visible in `/docs` until you promote them |
 
 Data files are written to `DATA_DIR` as `{persona_id}_history.json`,
-`{persona_id}_memories.json`, and so on.
+`{persona_id}_memories.json`, `{persona_id}_moments.md` (host + your
+highlights), `{persona_id}_journal.md` (hers), and so on. An older
+`{persona_id}_journal.md` from before this split is renamed to moments
+on first startup.
 
 ## Commands
 
 | Command | Does |
 |---|---|
-| `/status` | Memory window, chunk count, journal, model |
+| `/status` | Memory window, chunk count, moments, journal, model |
 | `/history-status` | Rolling history counts by channel |
 | `/memories` | Last stored memory chunks |
-| `/journal` | Recent journal entries |
+| `/moments` | Host and partner highlights |
+| `/journal` | Companion's own journal |
 | `/saved` | Pinned exchanges |
 | `/recall` | Search memories and load them into context |
-| `/reflect` | Ask the companion to read facts / journal / memories / docs |
+| `/reflect` | Ask the companion to read facts / journal / moments / memories / docs |
 | `/docs` | List or view reference docs |
 | `/reload-docs` | Reload the persona package from disk |
 | `/presence` | Toggle the presence module (whatever you put in that slot) |
