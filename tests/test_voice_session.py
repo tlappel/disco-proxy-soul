@@ -34,6 +34,7 @@ from disco_proxy_soul.discord_app.voice_session import (
     VoiceSessionError,
     VoiceSessionManager,
     VoiceSessionState,
+    is_intentional_barge_in,
 )
 from disco_proxy_soul.discord_app.voice_sink import LivePCMFrame, LivePCMSink
 
@@ -107,6 +108,7 @@ class FakeCompanion:
         self.gate = gate
         self.entered = asyncio.Event() if gate is not None else None
         self.reply = reply
+        self.persona = SimpleNamespace(companion_name="Naomi")
 
     async def respond(self, channel_id, user_text, *, interaction_mode=None):
         self.calls.append((channel_id, user_text, interaction_mode))
@@ -566,6 +568,8 @@ class VoiceConfigTests(unittest.TestCase):
                 "ELEVENLABS_SPEAKER_BOOST": "true",
                 "ELEVENLABS_SPEED": "1.1",
                 "VOICE_PLAYBACK_QUEUE_SECONDS": "2.5",
+                "VOICE_BARGE_IN_ENABLED": "true",
+                "VOICE_BARGE_IN_MIN_SPEECH_MS": "240",
             },
             clear=True,
         ):
@@ -586,6 +590,8 @@ class VoiceConfigTests(unittest.TestCase):
         self.assertTrue(loaded.elevenlabs_speaker_boost)
         self.assertEqual(loaded.elevenlabs_speed, 1.1)
         self.assertEqual(loaded.voice_playback_queue_seconds, 2.5)
+        self.assertTrue(loaded.voice_barge_in_enabled)
+        self.assertEqual(loaded.voice_barge_in_min_speech_ms, 240)
 
     def test_voice_config_ranges_are_validated_without_echoing_values(self) -> None:
         with patch.dict(
@@ -746,6 +752,14 @@ class RtpClockTests(unittest.TestCase):
 
 
 class SpeechEvidenceTests(unittest.TestCase):
+    def test_intentional_barge_in_requires_name_and_narrow_cue(self) -> None:
+        self.assertTrue(is_intentional_barge_in("Naomi, wait", "Naomi"))
+        self.assertTrue(is_intentional_barge_in("Hey Naomi, please hold on", "Naomi"))
+        self.assertTrue(is_intentional_barge_in("Okay Naomi, can you stop?", "Naomi"))
+        self.assertFalse(is_intentional_barge_in("wait", "Naomi"))
+        self.assertFalse(is_intentional_barge_in("Naomi, I have a thought", "Naomi"))
+        self.assertFalse(is_intentional_barge_in("Lila, wait", "Naomi"))
+
     def test_low_energy_artifact_is_rejected_but_short_speech_is_preserved(self) -> None:
         evidence = SpeechEvidenceTimeline()
         for _ in range(10):
@@ -1386,6 +1400,134 @@ class VoiceSessionAsyncTests(unittest.IsolatedAsyncioTestCase):
             app.calls[1][1],
             "[Travis]: Final arrived later",
         )
+        await session.stop()
+
+    async def test_corroborated_named_partial_intentionally_interrupts_playback(self) -> None:
+        app = FakeCompanion(reply="I heard the interruption.")
+        playback = BlockingPlayback()
+        tts_config = config(
+            voice_tts_enabled=True,
+            elevenlabs_api_key="tts-key",
+            elevenlabs_voice_id="voice-id",
+            voice_barge_in_enabled=True,
+            voice_barge_in_min_speech_ms=120,
+        )
+        session, _, gladia, _ = self.make_session(
+            app=app,
+            playback=playback,
+            session_config=tts_config,
+        )
+        await session.start()
+
+        first_start = session._speech_evidence.duration
+        for _ in range(10):
+            session._speech_evidence.observe_sent_frame(mono_frame(1000))
+        await gladia.events.put(
+            transcript(
+                "Give me a long answer",
+                final=True,
+                utterance_id="barge-first",
+                start=first_start,
+                end=session._speech_evidence.duration,
+            )
+        )
+        await playback.entered.wait()
+
+        cue_start = session._speech_evidence.duration
+        for _ in range(10):
+            session._speech_evidence.observe_sent_frame(mono_frame(1000))
+        cue_end = session._speech_evidence.duration
+        await gladia.events.put(
+            transcript(
+                "Naomi, wait",
+                final=False,
+                utterance_id="barge-cue",
+                start=cue_start,
+                end=cue_end,
+            )
+        )
+        await self.wait_for(lambda: session.counters.interrupted_playbacks == 1)
+        self.assertEqual(session.counters.barge_in_cues, 1)
+        self.assertEqual(playback.cancelled, 1)
+        self.assertFalse(session.status().playback_active)
+        self.assertEqual(len(app.calls), 1)
+        self.assertEqual(len(app.history), 2)
+        self.assertEqual(session.counters.spoken_responses, 0)
+
+        playback.release.set()
+        await gladia.events.put(
+            transcript(
+                "Naomi, wait. I need to add something.",
+                final=True,
+                utterance_id="barge-cue",
+                start=cue_start,
+                end=cue_end,
+            )
+        )
+        await self.wait_for(lambda: len(app.calls) == 2)
+        await self.wait_for(lambda: session.counters.spoken_responses == 1)
+        self.assertEqual(
+            app.calls[1][1],
+            "[Travis]: Naomi, wait. I need to add something.",
+        )
+        self.assertEqual(len(app.history), 4)
+        self.assertNotIn(
+            "**Travis (voice transcript):** Naomi, wait",
+            session.text_channel.messages,
+        )
+        await session.stop()
+
+    async def test_ordinary_overlap_does_not_trigger_intentional_barge_in(self) -> None:
+        app = FakeCompanion(reply="I keep speaking.")
+        playback = BlockingPlayback()
+        tts_config = config(
+            voice_tts_enabled=True,
+            elevenlabs_api_key="tts-key",
+            elevenlabs_voice_id="voice-id",
+            voice_barge_in_enabled=True,
+            voice_barge_in_min_speech_ms=120,
+        )
+        session, _, gladia, _ = self.make_session(
+            app=app,
+            playback=playback,
+            session_config=tts_config,
+        )
+        await session.start()
+
+        first_start = session._speech_evidence.duration
+        for _ in range(10):
+            session._speech_evidence.observe_sent_frame(mono_frame(1000))
+        await gladia.events.put(
+            transcript(
+                "Start speaking",
+                final=True,
+                utterance_id="ordinary-first",
+                start=first_start,
+                end=session._speech_evidence.duration,
+            )
+        )
+        await playback.entered.wait()
+
+        overlap_start = session._speech_evidence.duration
+        for _ in range(10):
+            session._speech_evidence.observe_sent_frame(mono_frame(1000))
+        await gladia.events.put(
+            transcript(
+                "Orange umbrella",
+                final=False,
+                utterance_id="ordinary-overlap",
+                start=overlap_start,
+                end=session._speech_evidence.duration,
+            )
+        )
+        await asyncio.sleep(0)
+        self.assertEqual(session.counters.barge_in_cues, 0)
+        self.assertEqual(session.counters.interrupted_playbacks, 0)
+        self.assertTrue(session.status().playback_active)
+        self.assertEqual(playback.cancelled, 0)
+
+        playback.release.set()
+        await self.wait_for(lambda: session.counters.spoken_responses == 1)
         await session.stop()
 
     async def test_stop_cancels_inflight_cognition_without_history_effect(self) -> None:

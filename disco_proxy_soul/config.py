@@ -112,6 +112,8 @@ class RuntimeConfig:
     elevenlabs_speaker_boost: bool
     elevenlabs_speed: float
     voice_playback_queue_seconds: float
+    voice_barge_in_enabled: bool
+    voice_barge_in_min_speech_ms: int
 
     @classmethod
     def from_env(cls) -> "RuntimeConfig":
@@ -247,6 +249,16 @@ class RuntimeConfig:
                 2.0,
                 0.2,
                 10.0,
+            ),
+            voice_barge_in_enabled=_as_bool(
+                os.getenv("VOICE_BARGE_IN_ENABLED"), False
+            ),
+            voice_barge_in_min_speech_ms=_bounded_int(
+                "VOICE_BARGE_IN_MIN_SPEECH_MS",
+                os.getenv("VOICE_BARGE_IN_MIN_SPEECH_MS"),
+                160,
+                40,
+                2_000,
             ),
         )
 

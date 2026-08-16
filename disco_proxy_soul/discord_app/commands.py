@@ -59,6 +59,8 @@ def register_commands(
             f"Playback active: {'yes' if status.playback_active else 'no'}; "
             f"finals spoken during playback: "
             f"{counters.finals_spoken_during_playback}\n"
+            f"Intentional barge-ins: {counters.barge_in_cues}; "
+            f"playbacks interrupted: {counters.interrupted_playbacks}\n"
             f"Inserted silence: {counters.inserted_silence_samples / 48_000:.2f}s; "
             f"RTP gaps: {counters.rtp_gap_samples / 48_000:.2f}s\n"
             f"RTP discontinuities: {counters.rtp_discontinuities}; "

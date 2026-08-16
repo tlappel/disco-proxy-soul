@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from enum import Enum
 import logging
 import math
+import re
 from typing import Any, Awaitable, Callable, Protocol
 
 from discord.ext import voice_recv
@@ -113,6 +114,32 @@ VOICE_MIN_FINAL_CONFIDENCE = 0.35
 VOICE_EVIDENCE_PADDING_SECONDS = 0.06
 VOICE_TURN_DEBOUNCE_SECONDS = 1.5
 VOICE_EVIDENCE_RETENTION_SECONDS = 60.0
+VOICE_BARGE_IN_MIN_SPEECH_MS = 160
+_BARGE_IN_CUES = (
+    ("wait",),
+    ("stop",),
+    ("pause",),
+    ("hold", "on"),
+)
+_BARGE_IN_LEADERS = {"hey", "okay", "ok"}
+_BARGE_IN_FILLERS = {"please", "can", "could", "would", "you"}
+
+
+def is_intentional_barge_in(text: str, companion_name: str) -> bool:
+    """Require the companion's name followed by a narrow interruption cue."""
+
+    tokens = re.findall(r"[a-z0-9]+", text.casefold())
+    name_tokens = re.findall(r"[a-z0-9]+", companion_name.casefold())
+    if not tokens or not name_tokens:
+        return False
+    while tokens and tokens[0] in _BARGE_IN_LEADERS:
+        tokens.pop(0)
+    if tokens[:len(name_tokens)] != name_tokens:
+        return False
+    remainder = tokens[len(name_tokens):]
+    while remainder and remainder[0] in _BARGE_IN_FILLERS:
+        remainder.pop(0)
+    return any(remainder[:len(cue)] == list(cue) for cue in _BARGE_IN_CUES)
 
 
 class VoiceSessionError(RuntimeError):
@@ -153,6 +180,8 @@ class VoiceSessionCounters:
     companion_responses: int = 0
     spoken_responses: int = 0
     finals_spoken_during_playback: int = 0
+    barge_in_cues: int = 0
+    interrupted_playbacks: int = 0
     report_drops: int = 0
 
 
@@ -715,6 +744,21 @@ class VoiceSession:
         self._playback_active = False
         self._playback_started_at: float | None = None
         self._playback_windows: deque[tuple[float, float]] = deque(maxlen=64)
+        self._playback_task: asyncio.Task[None] | None = None
+        self._barge_in_requested = False
+        self._barge_in_enabled = bool(
+            getattr(config, "voice_barge_in_enabled", False)
+        )
+        self._barge_in_min_speech_ms = int(
+            getattr(
+                config,
+                "voice_barge_in_min_speech_ms",
+                VOICE_BARGE_IN_MIN_SPEECH_MS,
+            )
+        )
+        self._barge_in_name = str(
+            getattr(getattr(app, "persona", None), "companion_name", "")
+        ).strip()
         self._pre_roll_seconds = max(0.0, pre_roll_seconds)
         self._shutdown_step_seconds = max(0.01, shutdown_step_seconds)
         self._gladia_stop_seconds = max(
@@ -1073,6 +1117,7 @@ class VoiceSession:
                     text = event.text.strip()
                     if not text:
                         continue
+                    self._request_barge_in(event)
                     if event.is_final:
                         self.counters.final_transcripts += 1
                         print(f"[voice:{self.guild_id}] [final] {self.starter_name}: {text}")
@@ -1136,11 +1181,27 @@ class VoiceSession:
                         )
                     self._playback_active = True
                     self._playback_started_at = self._speech_evidence.duration
+                    self._barge_in_requested = False
+                    interrupted = False
                     try:
-                        await self._playback.play(
-                            self.voice_client,
-                            self._tts.stream_pcm(reply),
+                        self._playback_task = asyncio.create_task(
+                            self._playback.play(
+                                self.voice_client,
+                                self._tts.stream_pcm(reply),
+                            ),
+                            name=f"voice-playback-g{self.guild_id}",
                         )
+                        try:
+                            await self._playback_task
+                        except asyncio.CancelledError:
+                            if (
+                                self._barge_in_requested
+                                and self.state is VoiceSessionState.RUNNING
+                            ):
+                                interrupted = True
+                                self.counters.interrupted_playbacks += 1
+                            else:
+                                raise
                     finally:
                         started_at = self._playback_started_at
                         if started_at is not None:
@@ -1149,7 +1210,10 @@ class VoiceSession:
                             )
                         self._playback_started_at = None
                         self._playback_active = False
-                    self.counters.spoken_responses += 1
+                        self._playback_task = None
+                        self._barge_in_requested = False
+                    if not interrupted:
+                        self.counters.spoken_responses += 1
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -1389,7 +1453,8 @@ class VoiceSession:
             "playout_reanchors=%s "
             "clock_dropped=%s pending_drops=%s late_samples=%s "
             "partials=%s finals=%s accepted_turns=%s rejected_finals=%s "
-            "responses=%s spoken=%s finals_during_playback=%s",
+            "responses=%s spoken=%s finals_during_playback=%s "
+            "barge_cues=%s interrupted_playbacks=%s",
             status.guild_id,
             status.channel_id,
             status.starter_user_id,
@@ -1412,7 +1477,30 @@ class VoiceSession:
             counters.companion_responses,
             counters.spoken_responses,
             counters.finals_spoken_during_playback,
+            counters.barge_in_cues,
+            counters.interrupted_playbacks,
         )
+
+    def _request_barge_in(self, event: TranscriptUpdate) -> bool:
+        task = self._playback_task
+        if (
+            not self._barge_in_enabled
+            or not self._playback_active
+            or self._barge_in_requested
+            or task is None
+            or task.done()
+            or not is_intentional_barge_in(event.text, self._barge_in_name)
+            or not self._overlaps_playback(event)
+            or not self._speech_evidence.corroborates(
+                event,
+                min_speech_ms=self._barge_in_min_speech_ms,
+            )
+        ):
+            return False
+        self._barge_in_requested = True
+        self.counters.barge_in_cues += 1
+        task.cancel()
+        return True
 
     def _overlaps_playback(self, event: TranscriptUpdate) -> bool:
         event_start = float(event.start)
