@@ -10,3 +10,4 @@ personas/*
 !personas/example/**
 .idea/
 .vscode/
+character-voice-bot/
