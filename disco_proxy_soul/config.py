@@ -104,6 +104,7 @@ class RuntimeConfig:
     voice_gladia_reconnect_initial_delay_seconds: float
     voice_gladia_reconnect_max_delay_seconds: float
     voice_gladia_reconnect_connect_timeout_seconds: float
+    voice_gladia_rotate_seconds: float
     voice_min_speech_ms: int
     voice_turn_debounce_seconds: float
     voice_tts_enabled: bool
@@ -223,6 +224,13 @@ class RuntimeConfig:
                 10.0,
                 0.5,
                 60.0,
+            ),
+            voice_gladia_rotate_seconds=_bounded_float(
+                "VOICE_GLADIA_ROTATE_SECONDS",
+                os.getenv("VOICE_GLADIA_ROTATE_SECONDS"),
+                10_200.0,
+                60.0,
+                10_740.0,
             ),
             voice_min_speech_ms=_bounded_int(
                 "VOICE_MIN_SPEECH_MS",

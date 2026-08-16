@@ -11,7 +11,7 @@ import asyncio
 from array import array
 from bisect import bisect_left
 from collections import OrderedDict, deque
-from dataclasses import dataclass, field as dataclass_field
+from dataclasses import dataclass, field as dataclass_field, replace
 from enum import Enum
 import logging
 import math
@@ -204,6 +204,8 @@ class VoiceSessionCounters:
     gladia_reconnects: int = 0
     gladia_reconnect_failures: int = 0
     gladia_ambiguous_frames_dropped: int = 0
+    gladia_rotations: int = 0
+    gladia_sessions_started: int = 0
     report_drops: int = 0
     stt_final_latency: LatencyMetric = dataclass_field(default_factory=LatencyMetric)
     cognition_latency: LatencyMetric = dataclass_field(default_factory=LatencyMetric)
@@ -738,6 +740,18 @@ class VoiceSession:
         self._disconnect_task: asyncio.Task[Any] | None = None
         self._disconnect_cleanup_done = False
         self.gladia: GladiaLiveSession | None = None
+        self._gladia_transport_lock = asyncio.Lock()
+        self._gladia_audio_offset = 0.0
+        self._gladia_session_ids: list[str] = []
+        self._consumer_expected_end: asyncio.Event | None = None
+        self._rotation_task: asyncio.Task[None] | None = None
+        self._gladia_rotate_seconds = max(
+            0.0,
+            float(getattr(config, "voice_gladia_rotate_seconds", 0.0)),
+        )
+        self._completed_gladia_reconnects = 0
+        self._completed_gladia_reconnect_failures = 0
+        self._completed_gladia_ambiguous_frames = 0
         self._gladia_stop_task: asyncio.Task[Any] | None = None
         self.sink: LivePCMSink | None = None
         self._gladia_factory = gladia_factory
@@ -835,15 +849,19 @@ class VoiceSession:
             self.counters.ingress_drops = self.sink.dropped_frames
         if self.gladia is not None:
             result = self.gladia.result
-            self.counters.gladia_reconnects = int(
-                getattr(result, "reconnects", 0)
+            self.counters.gladia_reconnects = (
+                self._completed_gladia_reconnects
+                + int(getattr(result, "reconnects", 0))
             )
-            self.counters.gladia_reconnect_failures = int(
-                getattr(result, "reconnect_failures", 0)
+            self.counters.gladia_reconnect_failures = (
+                self._completed_gladia_reconnect_failures
+                + int(getattr(result, "reconnect_failures", 0))
             )
-            self.counters.gladia_ambiguous_frames_dropped = int(
-                getattr(result, "ambiguous_frames_dropped", 0)
+            self.counters.gladia_ambiguous_frames_dropped = (
+                self._completed_gladia_ambiguous_frames
+                + int(getattr(result, "ambiguous_frames_dropped", 0))
             )
+        self.counters.gladia_sessions_started = len(self._gladia_session_ids)
         completion = (
             self.gladia.completion.value
             if self.gladia is not None
@@ -885,6 +903,60 @@ class VoiceSession:
             "thread_ingress_drop",
             f"Discord receive-thread audio ring dropped {total} packet(s); "
             "transcription may have a gap",
+        )
+
+    def _new_gladia_session(self) -> GladiaLiveSession:
+        initial_delay = float(
+            getattr(
+                self.config,
+                "voice_gladia_reconnect_initial_delay_seconds",
+                0.5,
+            )
+        )
+        return self._gladia_factory(
+            self.config.gladia_api_key,
+            WaveFormat(SAMPLE_RATE, 1, 16),
+            config=GladiaLiveConfig(
+                endpointing=self.config.voice_endpointing_seconds,
+                reconnect_attempts=int(
+                    getattr(self.config, "voice_gladia_reconnect_attempts", 3)
+                ),
+                reconnect_initial_delay=initial_delay,
+                reconnect_max_delay=max(
+                    initial_delay,
+                    float(
+                        getattr(
+                            self.config,
+                            "voice_gladia_reconnect_max_delay_seconds",
+                            5.0,
+                        )
+                    ),
+                ),
+                reconnect_connect_timeout=float(
+                    getattr(
+                        self.config,
+                        "voice_gladia_reconnect_connect_timeout_seconds",
+                        10.0,
+                    )
+                ),
+            ),
+        )
+
+    def _remember_gladia_session(self, gladia: Any) -> None:
+        session_id = str(getattr(gladia, "session_id", "") or "").strip()
+        if session_id:
+            self._gladia_session_ids.append(session_id)
+
+    def _accumulate_gladia_result(self, gladia: Any) -> None:
+        result = gladia.result
+        self._completed_gladia_reconnects += int(
+            getattr(result, "reconnects", 0)
+        )
+        self._completed_gladia_reconnect_failures += int(
+            getattr(result, "reconnect_failures", 0)
+        )
+        self._completed_gladia_ambiguous_frames += int(
+            getattr(result, "ambiguous_frames_dropped", 0)
         )
 
     async def start(self, existing_voice_client: Any | None = None) -> VoiceSessionStatus:
@@ -941,47 +1013,9 @@ class VoiceSession:
             if not self._voice_client_borrowed and voice_client.is_listening():
                 raise VoiceSessionError("Discord voice receive is already in use in this server")
             self._raise_if_starter_left_during_start()
-            self.gladia = self._gladia_factory(
-                self.config.gladia_api_key,
-                WaveFormat(SAMPLE_RATE, 1, 16),
-                config=GladiaLiveConfig(
-                    endpointing=self.config.voice_endpointing_seconds,
-                    reconnect_attempts=int(
-                        getattr(self.config, "voice_gladia_reconnect_attempts", 3)
-                    ),
-                    reconnect_initial_delay=float(
-                        getattr(
-                            self.config,
-                            "voice_gladia_reconnect_initial_delay_seconds",
-                            0.5,
-                        )
-                    ),
-                    reconnect_max_delay=max(
-                        float(
-                            getattr(
-                                self.config,
-                                "voice_gladia_reconnect_initial_delay_seconds",
-                                0.5,
-                            )
-                        ),
-                        float(
-                            getattr(
-                                self.config,
-                                "voice_gladia_reconnect_max_delay_seconds",
-                                5.0,
-                            )
-                        ),
-                    ),
-                    reconnect_connect_timeout=float(
-                        getattr(
-                            self.config,
-                            "voice_gladia_reconnect_connect_timeout_seconds",
-                            10.0,
-                        )
-                    ),
-                ),
-            )
+            self.gladia = self._new_gladia_session()
             await self.gladia.connect()
+            self._remember_gladia_session(self.gladia)
             self._raise_if_starter_left_during_start()
             self.sink = LivePCMSink(
                 self._loop,
@@ -996,12 +1030,23 @@ class VoiceSession:
             self._sender_task = asyncio.create_task(
                 self._sender_loop(), name=f"voice-pcm-sender-g{self.guild_id}"
             )
+            self._consumer_expected_end = asyncio.Event()
             self._consumer_task = asyncio.create_task(
-                self._consume_transcripts(), name=f"voice-transcripts-g{self.guild_id}"
+                self._consume_transcripts(
+                    self.gladia,
+                    audio_offset=self._gladia_audio_offset,
+                    expected_end=self._consumer_expected_end,
+                ),
+                name=f"voice-transcripts-g{self.guild_id}",
             )
             self.state = VoiceSessionState.RUNNING
             voice_client.listen(self.sink, after=self._listener_after)
             self._listen_started = True
+            if self._gladia_rotate_seconds:
+                self._rotation_task = asyncio.create_task(
+                    self._rotation_loop(),
+                    name=f"voice-gladia-rotation-g{self.guild_id}",
+                )
             return self.status()
         except BaseException as exc:
             original_error = exc
@@ -1159,7 +1204,11 @@ class VoiceSession:
                     except asyncio.QueueEmpty:
                         break
                 frame = clock.render()
-                delivered = await self.gladia.send_pcm(frame)
+                async with self._gladia_transport_lock:
+                    gladia = self.gladia
+                    if gladia is None:
+                        raise VoiceSessionError("Gladia session is unavailable")
+                    delivered = await gladia.send_pcm(frame)
                 if delivered is not False:
                     self._speech_evidence.observe_sent_frame(frame)
                     self.counters.sent_frames += 1
@@ -1182,11 +1231,17 @@ class VoiceSession:
                 self._safe_error(exc, prefix="Gladia audio sender stopped"),
             )
 
-    async def _consume_transcripts(self) -> None:
-        assert self.gladia is not None
+    async def _consume_transcripts(
+        self,
+        gladia: Any,
+        *,
+        audio_offset: float,
+        expected_end: asyncio.Event,
+    ) -> None:
         try:
-            async for event in self.gladia.iter_events():
+            async for event in gladia.iter_events():
                 if isinstance(event, TranscriptUpdate):
+                    event = self._offset_transcript(event, audio_offset)
                     text = event.text.strip()
                     if not text:
                         continue
@@ -1208,9 +1263,9 @@ class VoiceSession:
                 elif isinstance(event, GladiaErrorEvent):
                     self._trigger_failure("gladia_error", f"Gladia reported: {event.message}")
                     return
-            if self.state is VoiceSessionState.RUNNING:
-                if self.gladia.completion is CompletionState.ABNORMAL:
-                    reason = self.gladia.result.completion_reason or "unknown transport ending"
+            if self.state is VoiceSessionState.RUNNING and not expected_end.is_set():
+                if gladia.completion is CompletionState.ABNORMAL:
+                    reason = gladia.result.completion_reason or "unknown transport ending"
                     self._trigger_failure(
                         "gladia_completion",
                         f"Gladia session ended abnormally: {reason}",
@@ -1226,6 +1281,84 @@ class VoiceSession:
                 "gladia_consumer",
                 self._safe_error(exc, prefix="Gladia event receiver stopped"),
             )
+
+    @staticmethod
+    def _offset_transcript(
+        event: TranscriptUpdate,
+        audio_offset: float,
+    ) -> TranscriptUpdate:
+        if not audio_offset:
+            return event
+        return replace(
+            event,
+            start=event.start + audio_offset,
+            end=event.end + audio_offset,
+            words=tuple(
+                replace(
+                    word,
+                    start=word.start + audio_offset,
+                    end=word.end + audio_offset,
+                )
+                for word in event.words
+            ),
+        )
+
+    async def _rotation_loop(self) -> None:
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    await asyncio.wait_for(
+                        self._stop_event.wait(),
+                        timeout=self._gladia_rotate_seconds,
+                    )
+                    return
+                except asyncio.TimeoutError:
+                    pass
+                await self._rotate_gladia()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._trigger_failure(
+                "gladia_rotation",
+                self._safe_error(exc, prefix="Gladia session rotation failed"),
+            )
+
+    async def _rotate_gladia(self) -> None:
+        async with self._gladia_transport_lock:
+            if self.state is not VoiceSessionState.RUNNING:
+                return
+            old = self.gladia
+            old_consumer = self._consumer_task
+            old_expected_end = self._consumer_expected_end
+            if old is None or old_consumer is None or old_expected_end is None:
+                raise VoiceSessionError("Gladia rotation ownership is incomplete")
+
+            old_expected_end.set()
+            await old.stop(timeout=self._gladia_stop_seconds)
+            if old.completion is not CompletionState.NORMAL:
+                raise VoiceSessionError("Gladia rotation did not end normally")
+            await asyncio.wait_for(
+                asyncio.shield(old_consumer),
+                timeout=self._gladia_stop_seconds,
+            )
+            old_consumer.result()
+            self._accumulate_gladia_result(old)
+
+            replacement = self._new_gladia_session()
+            await replacement.connect()
+            self._gladia_audio_offset = self._speech_evidence.duration
+            self.gladia = replacement
+            self._remember_gladia_session(replacement)
+            self._consumer_expected_end = asyncio.Event()
+            self._consumer_task = asyncio.create_task(
+                self._consume_transcripts(
+                    replacement,
+                    audio_offset=self._gladia_audio_offset,
+                    expected_end=self._consumer_expected_end,
+                ),
+                name=f"voice-transcripts-g{self.guild_id}",
+            )
+            self.counters.gladia_rotations += 1
 
     async def _respond_to_turn(self, text: str) -> None:
         if self.state is not VoiceSessionState.RUNNING:
@@ -1450,6 +1583,10 @@ class VoiceSession:
             )
             if not self._listener_done.done():
                 self._listener_done.cancel()
+        rotation_terminal = await self._cancel_task(
+            self._rotation_task,
+            "Gladia rotation",
+        )
         sender_terminal = await self._cancel_task(self._sender_task, "audio sender")
         gladia_terminal = await self._finish_gladia()
         consumer_terminal = await self._finish_consumer()
@@ -1471,6 +1608,7 @@ class VoiceSession:
         resources_terminal = all(
             (
                 connect_terminal,
+                rotation_terminal,
                 sender_terminal,
                 gladia_terminal,
                 consumer_terminal,
@@ -1563,7 +1701,7 @@ class VoiceSession:
             "playout_reanchors=%s "
             "clock_dropped=%s pending_drops=%s late_samples=%s "
             "gladia_reconnects=%s gladia_reconnect_failures=%s "
-            "gladia_ambiguous_frames=%s "
+            "gladia_ambiguous_frames=%s gladia_sessions=%s rotations=%s "
             "partials=%s finals=%s accepted_turns=%s rejected_finals=%s "
             "responses=%s spoken=%s finals_during_playback=%s "
             "barge_cues=%s interrupted_playbacks=%s "
@@ -1589,6 +1727,8 @@ class VoiceSession:
             counters.gladia_reconnects,
             counters.gladia_reconnect_failures,
             counters.gladia_ambiguous_frames_dropped,
+            counters.gladia_sessions_started,
+            counters.gladia_rotations,
             counters.partial_transcripts,
             counters.final_transcripts,
             counters.accepted_turns,

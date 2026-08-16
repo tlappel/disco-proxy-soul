@@ -179,6 +179,7 @@ class FakeGladia:
         stop_gate=None,
         stop_delay=0.0,
         suppress_stop_cancel=False,
+        session_id=None,
     ) -> None:
         self.log = log if log is not None else []
         self.connect_error = connect_error
@@ -192,7 +193,13 @@ class FakeGladia:
         self.sent: list[bytes] = []
         self.events: asyncio.Queue[object] = asyncio.Queue()
         self.completion = CompletionState.PENDING
-        self.result = SimpleNamespace(completion_reason=None)
+        self.session_id = session_id
+        self.result = SimpleNamespace(
+            completion_reason=None,
+            reconnects=0,
+            reconnect_failures=0,
+            ambiguous_frames_dropped=0,
+        )
         self.connected = False
         self.stop_calls = 0
         self.stop_timeouts: list[float] = []
@@ -566,6 +573,7 @@ class VoiceConfigTests(unittest.TestCase):
                 "VOICE_GLADIA_RECONNECT_INITIAL_DELAY_SECONDS": "0.75",
                 "VOICE_GLADIA_RECONNECT_MAX_DELAY_SECONDS": "6.0",
                 "VOICE_GLADIA_RECONNECT_CONNECT_TIMEOUT_SECONDS": "8.0",
+                "VOICE_GLADIA_ROTATE_SECONDS": "9000",
                 "VOICE_MIN_SPEECH_MS": "200",
                 "VOICE_TURN_DEBOUNCE_SECONDS": "0.8",
                 "VOICE_TTS_ENABLED": "true",
@@ -597,6 +605,7 @@ class VoiceConfigTests(unittest.TestCase):
         self.assertEqual(
             loaded.voice_gladia_reconnect_connect_timeout_seconds, 8.0
         )
+        self.assertEqual(loaded.voice_gladia_rotate_seconds, 9000.0)
         self.assertEqual(loaded.voice_min_speech_ms, 200)
         self.assertEqual(loaded.voice_turn_debounce_seconds, 0.8)
         self.assertTrue(loaded.voice_tts_enabled)
@@ -990,6 +999,7 @@ class VoiceSessionAsyncTests(unittest.IsolatedAsyncioTestCase):
         self,
         *,
         gladia=None,
+        gladia_sequence=None,
         channel=None,
         text_channel=None,
         app=None,
@@ -1001,11 +1011,14 @@ class VoiceSessionAsyncTests(unittest.IsolatedAsyncioTestCase):
         shutdown_step=0.05,
     ):
         channel = channel or FakeVoiceChannel()
-        gladia = gladia or FakeGladia(channel.log)
+        sequence = list(gladia_sequence or [])
+        gladia = gladia or (sequence[0] if sequence else FakeGladia(channel.log))
         factory_calls = []
 
         def factory(*args, **kwargs):
             factory_calls.append((args, kwargs))
+            if sequence:
+                return sequence.pop(0)
             return gladia
 
         def tts_factory(*args, **kwargs):
@@ -1043,6 +1056,7 @@ class VoiceSessionAsyncTests(unittest.IsolatedAsyncioTestCase):
         for name in (
             "_sender_task",
             "_consumer_task",
+            "_rotation_task",
             "_reporter_task",
             "_failure_task",
             "_shutdown_task",
@@ -1257,6 +1271,86 @@ class VoiceSessionAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.counters.cognition_latency.samples, 1)
         self.assertEqual(session.counters.tts_first_frame_latency.samples, 1)
         self.assertEqual(session.counters.playback_start_latency.samples, 1)
+        await session.stop()
+
+    async def test_planned_rotation_preserves_timeline_and_cognition(self) -> None:
+        log: list[str] = []
+        first = FakeGladia(log, session_id="gladia-one")
+        second = FakeGladia(log, session_id="gladia-two")
+        app = FakeCompanion(reply="Still with you.")
+        session, _, _, factory_calls = self.make_session(
+            gladia_sequence=[first, second],
+            app=app,
+        )
+        await session.start()
+        for _ in range(10):
+            session._speech_evidence.observe_sent_frame(mono_frame(1000))
+
+        await session._rotate_gladia()
+        offset = session._gladia_audio_offset
+        self.assertIs(session.gladia, second)
+        self.assertEqual(session._gladia_session_ids, ["gladia-one", "gladia-two"])
+        self.assertEqual(session.counters.gladia_rotations, 1)
+        self.assertEqual(session.status().counters.gladia_sessions_started, 2)
+        self.assertEqual(len(factory_calls), 2)
+        self.assertLess(log.index("gladia.stop"), log.index("gladia.connect", 1))
+
+        for _ in range(10):
+            session._speech_evidence.observe_sent_frame(mono_frame(1000))
+        await second.events.put(
+            transcript(
+                "Across the rotation",
+                final=True,
+                utterance_id="rotated-turn",
+                start=0.0,
+                end=0.2,
+            )
+        )
+        await self.wait_for(lambda: len(app.calls) == 1)
+        self.assertEqual(app.calls[0][1], "[Travis]: Across the rotation")
+        self.assertGreater(offset, 0.0)
+        await session.stop()
+
+    async def test_rotation_timer_is_accelerated_without_wall_clock_hours(self) -> None:
+        first = FakeGladia(session_id="timer-one")
+        second = FakeGladia(session_id="timer-two")
+        session, _, _, _ = self.make_session(
+            gladia_sequence=[first, second],
+            session_config=config(voice_gladia_rotate_seconds=0.02),
+        )
+        await session.start()
+        await self.wait_for(
+            lambda: session.counters.gladia_rotations == 1,
+            timeout=0.5,
+        )
+        self.assertIs(session.gladia, second)
+        await session.stop()
+        self.assert_owned_tasks_terminal(session)
+
+    async def test_multiple_rotations_preserve_ids_and_cumulative_health(self) -> None:
+        first = FakeGladia(session_id="long-one")
+        second = FakeGladia(session_id="long-two")
+        third = FakeGladia(session_id="long-three")
+        first.result.reconnects = 1
+        first.result.ambiguous_frames_dropped = 1
+        second.result.reconnect_failures = 2
+        session, _, _, _ = self.make_session(
+            gladia_sequence=[first, second, third],
+        )
+        await session.start()
+
+        await session._rotate_gladia()
+        await session._rotate_gladia()
+        counters = session.status().counters
+        self.assertEqual(
+            session._gladia_session_ids,
+            ["long-one", "long-two", "long-three"],
+        )
+        self.assertEqual(counters.gladia_rotations, 2)
+        self.assertEqual(counters.gladia_sessions_started, 3)
+        self.assertEqual(counters.gladia_reconnects, 1)
+        self.assertEqual(counters.gladia_reconnect_failures, 2)
+        self.assertEqual(counters.gladia_ambiguous_frames_dropped, 1)
         await session.stop()
 
     async def test_turn_during_playback_waits_without_overlapping_response(self) -> None:

@@ -180,6 +180,7 @@ VOICE_GLADIA_RECONNECT_ATTEMPTS=3
 VOICE_GLADIA_RECONNECT_INITIAL_DELAY_SECONDS=0.5
 VOICE_GLADIA_RECONNECT_MAX_DELAY_SECONDS=5.0
 VOICE_GLADIA_RECONNECT_CONNECT_TIMEOUT_SECONDS=10.0
+VOICE_GLADIA_ROTATE_SECONDS=10200
 VOICE_MIN_SPEECH_MS=120
 VOICE_TURN_DEBOUNCE_SECONDS=1.5
 VOICE_TTS_ENABLED=false
@@ -204,6 +205,10 @@ An unexpectedly closed Gladia WebSocket reconnects to the same temporary URL
 within the configured retry budget. A PCM frame whose delivery became
 ambiguous is counted and dropped rather than replayed; exhausted retries stop
 the session normally through the existing failure path.
+Before Gladia's three-hour hard limit, the voice owner ends the current
+provider session normally and starts a fresh one. Transcript timestamps from
+each replacement are offset onto the existing local audio timeline, so speech
+evidence, latency, and playback correlation remain continuous.
 `VOICE_MIN_SPEECH_MS` controls the independent local speech-evidence gate;
 `VOICE_TURN_DEBOUNCE_SECONDS` controls nearby-final assembly.
 When `VOICE_BARGE_IN_ENABLED=true`, locally corroborated speech containing the

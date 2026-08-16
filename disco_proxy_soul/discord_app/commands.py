@@ -77,6 +77,8 @@ def register_commands(
             f"failed attempts: {counters.gladia_reconnect_failures}; "
             "ambiguous frames dropped: "
             f"{counters.gladia_ambiguous_frames_dropped}\n"
+            f"Gladia sessions: {counters.gladia_sessions_started}; "
+            f"planned rotations: {counters.gladia_rotations}\n"
             f"Turns accepted: {counters.accepted_turns}; "
             f"text replies: {counters.companion_responses}; "
             f"spoken replies: {counters.spoken_responses}\n"
