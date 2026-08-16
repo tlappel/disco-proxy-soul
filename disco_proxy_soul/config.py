@@ -95,6 +95,16 @@ class RuntimeConfig:
     voice_gladia_stop_seconds: float
     voice_min_speech_ms: int
     voice_turn_debounce_seconds: float
+    voice_tts_enabled: bool
+    elevenlabs_api_key: str
+    elevenlabs_voice_id: str
+    elevenlabs_model_id: str
+    elevenlabs_stability: float
+    elevenlabs_similarity_boost: float
+    elevenlabs_style: float
+    elevenlabs_speaker_boost: bool
+    elevenlabs_speed: float
+    voice_playback_queue_seconds: float
 
     @classmethod
     def from_env(cls) -> "RuntimeConfig":
@@ -186,6 +196,50 @@ class RuntimeConfig:
                 1.5,
                 0.1,
                 5.0,
+            ),
+            voice_tts_enabled=_as_bool(os.getenv("VOICE_TTS_ENABLED"), False),
+            elevenlabs_api_key=os.getenv("ELEVENLABS_API_KEY", "").strip(),
+            elevenlabs_voice_id=os.getenv("ELEVENLABS_VOICE_ID", "").strip(),
+            elevenlabs_model_id=os.getenv(
+                "ELEVENLABS_MODEL_ID", "eleven_flash_v2_5"
+            ).strip(),
+            elevenlabs_stability=_bounded_float(
+                "ELEVENLABS_STABILITY",
+                os.getenv("ELEVENLABS_STABILITY"),
+                0.5,
+                0.0,
+                1.0,
+            ),
+            elevenlabs_similarity_boost=_bounded_float(
+                "ELEVENLABS_SIMILARITY_BOOST",
+                os.getenv("ELEVENLABS_SIMILARITY_BOOST"),
+                0.75,
+                0.0,
+                1.0,
+            ),
+            elevenlabs_style=_bounded_float(
+                "ELEVENLABS_STYLE",
+                os.getenv("ELEVENLABS_STYLE"),
+                0.0,
+                0.0,
+                1.0,
+            ),
+            elevenlabs_speaker_boost=_as_bool(
+                os.getenv("ELEVENLABS_SPEAKER_BOOST"), False
+            ),
+            elevenlabs_speed=_bounded_float(
+                "ELEVENLABS_SPEED",
+                os.getenv("ELEVENLABS_SPEED"),
+                1.0,
+                0.7,
+                1.2,
+            ),
+            voice_playback_queue_seconds=_bounded_float(
+                "VOICE_PLAYBACK_QUEUE_SECONDS",
+                os.getenv("VOICE_PLAYBACK_QUEUE_SECONDS"),
+                2.0,
+                0.2,
+                10.0,
             ),
         )
 

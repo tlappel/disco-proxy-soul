@@ -11,6 +11,22 @@ from ..app import CompanionApp
 from .voice_session import VoiceSessionError, VoiceSessionManager, VoiceSessionStatus
 
 
+def live_start_notice(display_name: str, *, tts_enabled: bool) -> str:
+    tts_disclosure = (
+        " Naomi's response text will be sent to ElevenLabs for voice synthesis "
+        "and played in the voice channel."
+        if tts_enabled
+        else " Naomi's response will appear as Discord text."
+    )
+    return (
+        f"🔴 **Live voice chat is starting for {display_name}.** Their voice "
+        "audio is sent to Gladia for transcription. Accepted final turns reach "
+        "companion cognition and appear in this channel."
+        f"{tts_disclosure} Live mode saves no raw WAV, PCM, or generated audio. "
+        "Use `/voice-chat stop` to end it."
+    )
+
+
 def register_commands(
     tree: app_commands.CommandTree,
     app: CompanionApp,
@@ -20,7 +36,7 @@ def register_commands(
     partner = app.persona.partner_name
     voice_chat = app_commands.Group(
         name="voice-chat",
-        description="Control experimental single-speaker live transcription",
+        description="Control experimental single-speaker live voice chat",
     )
     tree.add_command(voice_chat)
 
@@ -37,6 +53,9 @@ def register_commands(
             f"Gladia frames sent: {counters.sent_frames}; "
             f"finals: {counters.final_transcripts}; "
             f"partials: {counters.partial_transcripts}\n"
+            f"Turns accepted: {counters.accepted_turns}; "
+            f"text replies: {counters.companion_responses}; "
+            f"spoken replies: {counters.spoken_responses}\n"
             f"Inserted silence: {counters.inserted_silence_samples / 48_000:.2f}s; "
             f"RTP gaps: {counters.rtp_gap_samples / 48_000:.2f}s\n"
             f"RTP discontinuities: {counters.rtp_discontinuities}; "
@@ -46,7 +65,7 @@ def register_commands(
             f"Last warning: {status.last_error or 'none'}"
         )
 
-    @voice_chat.command(name="start", description="Start live transcription for your voice")
+    @voice_chat.command(name="start", description="Start live voice chat for your voice")
     async def slash_voice_chat_start(interaction: discord.Interaction) -> None:
         guild = interaction.guild
         voice_state = getattr(interaction.user, "voice", None)
@@ -68,11 +87,10 @@ def register_commands(
 
         await interaction.response.defer(thinking=True)
         await interaction.followup.send(
-            f"🔴 **Live voice transcription is starting for "
-            f"{interaction.user.display_name}.** Their voice audio is sent to "
-            "Gladia for transcription. Stable final transcripts will appear in "
-            "this channel; companion-history integration comes in a later phase. "
-            "Live mode saves no raw WAV or PCM audio. Use `/voice-chat stop` to end it."
+            live_start_notice(
+                interaction.user.display_name,
+                tts_enabled=bool(voice_sessions.config.voice_tts_enabled),
+            )
         )
         try:
             status = await voice_sessions.start(

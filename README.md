@@ -104,17 +104,20 @@ Data files are written to `DATA_DIR` as `{persona_id}_history.json`,
 | `/reach-reset` | Reset outreach counters |
 | `/voice-record` | Join your voice channel and record decoded PCM per speaker |
 | `/voice-stop` | Stop recording, disconnect, and report local WAV paths |
-| `/voice-chat start` | Stream only the starter's live voice to Gladia |
+| `/voice-chat start` | Start single-speaker live chat through Gladia |
 | `/voice-chat status` | Show audio queue, timing, drop, and transcript counters |
 | `/voice-chat stop` | Stop Gladia, voice receive, and the Discord connection |
 
-## Experimental live voice transcription
+## Experimental live voice chat
 
-This branch contains the first production-shaped slice of voice chat. It
-transcribes only the person who runs `/voice-chat start`; every other speaker
-is ignored. Stable final transcripts are posted to the command channel, while
-partial guesses are terminal diagnostics only. It does **not** invoke the
-companion, write conversation history, generate speech, or save raw audio yet.
+This branch contains a production-shaped single-human voice loop. It listens
+only to the person who runs `/voice-chat start`; every other speaker is
+ignored. Stable finals are independently checked against local speech evidence
+and assembled into natural turns. Accepted turns use the normal companion
+cognition/history path exactly once. Naomi's canonical response is posted as
+Discord text and can optionally be spoken through ElevenLabs. Partial guesses
+remain terminal diagnostics and never reach cognition or history. Live mode
+saves no raw or generated audio.
 
 Add these values to the private `.env` file:
 
@@ -125,20 +128,25 @@ VOICE_ENDPOINTING_SECONDS=0.1
 VOICE_QUEUE_SECONDS=2.0
 VOICE_GLADIA_STOP_SECONDS=15.0
 VOICE_MIN_SPEECH_MS=120
+VOICE_TURN_DEBOUNCE_SECONDS=1.5
+VOICE_TTS_ENABLED=false
+ELEVENLABS_API_KEY=your-key
+ELEVENLABS_VOICE_ID=your-voice-id
 ```
 
 Join a private voice channel and run `/voice-chat start`. The public notice
-states that the starter's audio is sent to Gladia and that final transcripts
-appear in the channel. Use `/voice-chat status` to inspect transport health and
-`/voice-chat stop` to close the receiver, Gladia session, and connection.
+states that the starter's audio is sent to Gladia, accepted turns reach
+companion cognition, and response text is sent to ElevenLabs when speech is
+enabled. Use `/voice-chat status` to inspect transport health and
+`/voice-chat stop` to close receive, transcription, and playback.
 
 Live mode sends mono PCM16 at 48 kHz on a paced 20 ms clock. It supplies timed
 silence for endpointing, bounds both sides of the receive-thread handoff,
 reports drops and RTP discontinuities, and never writes a WAV or PCM file.
 Fatal receive or Gladia failures stop and release the session automatically;
 shutdown remains cleanup-safe if its command task is cancelled.
-`VOICE_MIN_SPEECH_MS` is accepted now but is reserved for the Phase 3
-independent speech-evidence gate.
+`VOICE_MIN_SPEECH_MS` controls the independent local speech-evidence gate;
+`VOICE_TURN_DEBOUNCE_SECONDS` controls nearby-final assembly.
 `VOICE_GLADIA_STOP_SECONDS` gives Gladia Live V2 time to drain final
 transcripts and end its session; it is separate from Discord cleanup timing.
 If the starter leaves or moves to another voice channel, the live session
@@ -149,8 +157,9 @@ visible without enabling Discord debug logs. These summaries are numeric and
 credential-redacted.
 
 The bot needs **View Channels**, **Send Messages**, **Read Message History**,
-and **Connect** in both the text and voice channels. It does not need **Speak**
-until outbound TTS is implemented.
+and **Connect** in both the text and voice channels. Enable **Speak** when
+`VOICE_TTS_ENABLED=true`. The public start notice discloses Gladia processing,
+companion cognition, and ElevenLabs synthesis before the bot connects.
 
 ### Diagnostic recording and replay
 

@@ -117,6 +117,26 @@ class FakeCompanion:
         return self.reply
 
 
+class FakeTTS:
+    def __init__(self, chunks=(b"pcm",)) -> None:
+        self.chunks = tuple(chunks)
+        self.texts = []
+
+    async def stream_pcm(self, text):
+        self.texts.append(text)
+        for chunk in self.chunks:
+            yield chunk
+
+
+class FakePlayback:
+    def __init__(self, *, capacity_frames=100) -> None:
+        self.capacity_frames = capacity_frames
+        self.calls = []
+
+    async def play(self, voice_client, chunks):
+        self.calls.append((voice_client, [chunk async for chunk in chunks]))
+
+
 class FakeGladia:
     def __init__(
         self,
@@ -513,6 +533,16 @@ class VoiceConfigTests(unittest.TestCase):
                 "VOICE_GLADIA_STOP_SECONDS": "17.5",
                 "VOICE_MIN_SPEECH_MS": "200",
                 "VOICE_TURN_DEBOUNCE_SECONDS": "0.8",
+                "VOICE_TTS_ENABLED": "true",
+                "ELEVENLABS_API_KEY": "eleven-secret",
+                "ELEVENLABS_VOICE_ID": "naomi-voice",
+                "ELEVENLABS_MODEL_ID": "eleven_flash_v2_5",
+                "ELEVENLABS_STABILITY": "0.4",
+                "ELEVENLABS_SIMILARITY_BOOST": "0.8",
+                "ELEVENLABS_STYLE": "0.1",
+                "ELEVENLABS_SPEAKER_BOOST": "true",
+                "ELEVENLABS_SPEED": "1.1",
+                "VOICE_PLAYBACK_QUEUE_SECONDS": "2.5",
             },
             clear=True,
         ):
@@ -524,6 +554,15 @@ class VoiceConfigTests(unittest.TestCase):
         self.assertEqual(loaded.voice_gladia_stop_seconds, 17.5)
         self.assertEqual(loaded.voice_min_speech_ms, 200)
         self.assertEqual(loaded.voice_turn_debounce_seconds, 0.8)
+        self.assertTrue(loaded.voice_tts_enabled)
+        self.assertEqual(loaded.elevenlabs_api_key, "eleven-secret")
+        self.assertEqual(loaded.elevenlabs_voice_id, "naomi-voice")
+        self.assertEqual(loaded.elevenlabs_stability, 0.4)
+        self.assertEqual(loaded.elevenlabs_similarity_boost, 0.8)
+        self.assertEqual(loaded.elevenlabs_style, 0.1)
+        self.assertTrue(loaded.elevenlabs_speaker_boost)
+        self.assertEqual(loaded.elevenlabs_speed, 1.1)
+        self.assertEqual(loaded.voice_playback_queue_seconds, 2.5)
 
     def test_voice_config_ranges_are_validated_without_echoing_values(self) -> None:
         with patch.dict(
@@ -900,6 +939,8 @@ class VoiceSessionAsyncTests(unittest.IsolatedAsyncioTestCase):
         text_channel=None,
         app=None,
         session_config=None,
+        tts=None,
+        playback=None,
         pre_roll=0,
         turn_debounce=0,
         shutdown_step=0.05,
@@ -912,6 +953,14 @@ class VoiceSessionAsyncTests(unittest.IsolatedAsyncioTestCase):
             factory_calls.append((args, kwargs))
             return gladia
 
+        def tts_factory(*args, **kwargs):
+            return tts or FakeTTS()
+
+        def playback_factory(**kwargs):
+            if playback is not None:
+                return playback
+            return FakePlayback(**kwargs)
+
         session = VoiceSession(
             guild_id=1,
             voice_channel=channel,
@@ -921,6 +970,8 @@ class VoiceSessionAsyncTests(unittest.IsolatedAsyncioTestCase):
             config=session_config or config(),
             app=app,
             gladia_factory=factory,
+            tts_factory=tts_factory,
+            playback_factory=playback_factory,
             pre_roll_seconds=pre_roll,
             turn_debounce_seconds=turn_debounce,
             shutdown_step_seconds=shutdown_step,
@@ -1095,6 +1146,54 @@ class VoiceSessionAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(app.history), 2)
         self.assertEqual(session.counters.accepted_turns, 1)
         self.assertEqual(session.counters.companion_responses, 1)
+        await session.stop()
+
+    async def test_canonical_text_reply_is_spoken_once(self) -> None:
+        app = FakeCompanion(reply="The same reply, exactly.")
+        tts = FakeTTS(chunks=(b"one", b"two"))
+        playback = FakePlayback()
+        tts_config = config(
+            voice_tts_enabled=True,
+            elevenlabs_api_key="tts-key",
+            elevenlabs_voice_id="voice-id",
+            elevenlabs_model_id="eleven_flash_v2_5",
+            elevenlabs_stability=0.5,
+            elevenlabs_similarity_boost=0.75,
+            elevenlabs_style=0.0,
+            elevenlabs_speaker_boost=False,
+            elevenlabs_speed=1.0,
+            voice_playback_queue_seconds=2.0,
+        )
+        session, channel, gladia, _ = self.make_session(
+            app=app,
+            tts=tts,
+            playback=playback,
+            session_config=tts_config,
+        )
+        await session.start()
+        start = session._speech_evidence.duration
+        for _ in range(10):
+            session._speech_evidence.observe_sent_frame(mono_frame(1000))
+        await gladia.events.put(
+            transcript(
+                "Speak back",
+                final=True,
+                start=start,
+                end=session._speech_evidence.duration,
+            )
+        )
+        await self.wait_for(lambda: len(playback.calls) == 1)
+        self.assertEqual(tts.texts, ["The same reply, exactly."])
+        self.assertEqual(playback.calls, [(channel.client, [b"one", b"two"])])
+        self.assertEqual(
+            session.text_channel.messages,
+            [
+                "**Travis (voice transcript):** Speak back",
+                "The same reply, exactly.",
+            ],
+        )
+        self.assertEqual(session.counters.companion_responses, 1)
+        self.assertEqual(session.counters.spoken_responses, 1)
         await session.stop()
 
     async def test_stop_cancels_inflight_cognition_without_history_effect(self) -> None:

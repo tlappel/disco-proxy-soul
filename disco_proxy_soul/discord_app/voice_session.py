@@ -28,10 +28,15 @@ from ..adapters.gladia_live import (
     WaveFormat,
     redact_sensitive_text,
 )
+from ..adapters.elevenlabs_tts import (
+    ElevenLabsTTS,
+    ElevenLabsTTSConfig,
+)
 from ..config import RuntimeConfig
 from .voice_capture import CaptureSummary, WaveCaptureSession
 from .voice_compat import install_voice_receive_compatibility
 from .voice_sink import DiagnosticWaveSink, LivePCMFrame, LivePCMSink
+from .voice_playback import VoicePlayback
 
 
 log = logging.getLogger(__name__)
@@ -146,6 +151,7 @@ class VoiceSessionCounters:
     accepted_turns: int = 0
     rejected_finals: int = 0
     companion_responses: int = 0
+    spoken_responses: int = 0
     report_drops: int = 0
 
 
@@ -625,6 +631,8 @@ class FinalTurnCoordinator:
 
 
 GladiaFactory = Callable[..., GladiaLiveSession]
+TTSFactory = Callable[..., ElevenLabsTTS]
+PlaybackFactory = Callable[..., VoicePlayback]
 TerminalCallback = Callable[["VoiceSession"], None]
 
 
@@ -643,6 +651,8 @@ class VoiceSession:
         app: _Companion | None = None,
         conversation_lock: asyncio.Lock | None = None,
         gladia_factory: GladiaFactory = GladiaLiveSession,
+        tts_factory: TTSFactory = ElevenLabsTTS,
+        playback_factory: PlaybackFactory = VoicePlayback,
         pre_roll_seconds: float = DEFAULT_PRE_ROLL_SECONDS,
         turn_debounce_seconds: float | None = None,
         shutdown_step_seconds: float = DEFAULT_SHUTDOWN_STEP_SECONDS,
@@ -674,6 +684,32 @@ class VoiceSession:
         self._gladia_stop_task: asyncio.Task[Any] | None = None
         self.sink: LivePCMSink | None = None
         self._gladia_factory = gladia_factory
+        self._tts: ElevenLabsTTS | None = None
+        if bool(getattr(config, "voice_tts_enabled", False)):
+            self._tts = tts_factory(
+                str(getattr(config, "elevenlabs_api_key", "")),
+                str(getattr(config, "elevenlabs_voice_id", "")),
+                config=ElevenLabsTTSConfig(
+                    model_id=str(
+                        getattr(config, "elevenlabs_model_id", "eleven_flash_v2_5")
+                    ),
+                    stability=float(getattr(config, "elevenlabs_stability", 0.5)),
+                    similarity_boost=float(
+                        getattr(config, "elevenlabs_similarity_boost", 0.75)
+                    ),
+                    style=float(getattr(config, "elevenlabs_style", 0.0)),
+                    use_speaker_boost=bool(
+                        getattr(config, "elevenlabs_speaker_boost", False)
+                    ),
+                    speed=float(getattr(config, "elevenlabs_speed", 1.0)),
+                ),
+            )
+        playback_seconds = float(
+            getattr(config, "voice_playback_queue_seconds", 2.0)
+        )
+        self._playback = playback_factory(
+            capacity_frames=max(1, math.ceil(playback_seconds / FRAME_SECONDS))
+        )
         self._pre_roll_seconds = max(0.0, pre_roll_seconds)
         self._shutdown_step_seconds = max(0.01, shutdown_step_seconds)
         self._gladia_stop_seconds = max(
@@ -1084,6 +1120,16 @@ class VoiceSession:
                 for index in range(0, len(reply), 1900):
                     await self.text_channel.send(reply[index:index + 1900])
                 self.counters.companion_responses += 1
+                if self._tts is not None:
+                    if self.voice_client is None:
+                        raise VoiceSessionError(
+                            "Discord voice connection ended before outbound speech"
+                        )
+                    await self._playback.play(
+                        self.voice_client,
+                        self._tts.stream_pcm(reply),
+                    )
+                    self.counters.spoken_responses += 1
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -1323,7 +1369,7 @@ class VoiceSession:
             "playout_reanchors=%s "
             "clock_dropped=%s pending_drops=%s late_samples=%s "
             "partials=%s finals=%s accepted_turns=%s rejected_finals=%s "
-            "responses=%s",
+            "responses=%s spoken=%s",
             status.guild_id,
             status.channel_id,
             status.starter_user_id,
@@ -1344,6 +1390,7 @@ class VoiceSession:
             counters.accepted_turns,
             counters.rejected_finals,
             counters.companion_responses,
+            counters.spoken_responses,
         )
 
     async def _disconnect_voice_client(self, voice_client: Any | None) -> bool:
@@ -1840,11 +1887,15 @@ class VoiceSessionManager:
         *,
         app: _Companion | None = None,
         gladia_factory: GladiaFactory = GladiaLiveSession,
+        tts_factory: TTSFactory = ElevenLabsTTS,
+        playback_factory: PlaybackFactory = VoicePlayback,
         session_factory: Callable[..., VoiceSession] = VoiceSession,
     ) -> None:
         self.config = config
         self._app = app
         self._gladia_factory = gladia_factory
+        self._tts_factory = tts_factory
+        self._playback_factory = playback_factory
         self._session_factory = session_factory
         self._sessions: dict[int, VoiceSession] = {}
         self._conversation_locks: dict[str, asyncio.Lock] = {}
@@ -1879,6 +1930,15 @@ class VoiceSessionManager:
             raise VoiceSessionError("Live voice chat is disabled (VOICE_ENABLED=false)")
         if not self.config.gladia_api_key:
             raise VoiceSessionError("Live voice chat needs GLADIA_API_KEY")
+        if bool(getattr(self.config, "voice_tts_enabled", False)):
+            if not str(getattr(self.config, "elevenlabs_api_key", "")).strip():
+                raise VoiceSessionError(
+                    "Outbound voice needs ELEVENLABS_API_KEY"
+                )
+            if not str(getattr(self.config, "elevenlabs_voice_id", "")).strip():
+                raise VoiceSessionError(
+                    "Outbound voice needs ELEVENLABS_VOICE_ID"
+                )
         if guild_id in self._diagnostics or guild_id in self._diagnostic_guilds:
             raise VoiceSessionError(
                 "Stop the diagnostic /voice-record session before starting live voice chat"
@@ -1969,6 +2029,8 @@ class VoiceSessionManager:
                 conversation_key, asyncio.Lock()
             ),
             gladia_factory=self._gladia_factory,
+            tts_factory=self._tts_factory,
+            playback_factory=self._playback_factory,
             on_terminal=terminal,
         )
         self._sessions[guild_id] = session

@@ -1,7 +1,7 @@
 # Live Voice Chat — implementation plan
 
-Status: Phases 1-3 implemented on `feature/voice-live-chat`; live text cognition
-accepted, outbound speech not yet implemented.
+Status: Phases 1-4 implemented on `feature/voice-live-chat`; live text cognition
+and streaming outbound speech accepted.
 
 ## Current checkpoint — 2026-08-16
 
@@ -28,7 +28,23 @@ Final live acceptance:
 - Full unit suite: `158/158` passing.
 - Naomi was stopped after the test; no bot process was intentionally left running.
 
-Phase 4 is next. Do not reopen or replace the verified receive/transport
+Phase 4 is implemented and live-tested. The canonical Discord reply streams to
+ElevenLabs Flash v2.5 as raw 48 kHz mono PCM16, is converted to exact 20 ms
+Discord stereo frames through a bounded bridge, and plays through the existing
+voice connection. Provider and playback failures are credential-redacted;
+cancellation stops playback and wakes the Discord reader without writing audio
+to disk.
+
+Phase 4 live acceptance produced three accepted turns, three text replies, and
+three matching spoken replies. Seven duplicate/noise-like finals were rejected.
+The run had zero receive-thread drops, zero event-loop queue drops, zero late
+samples, one isolated corrupt Discord frame that the existing guard survived,
+and 305 clock-dropped packets during phone/Wi-Fi testing. Leaving the channel
+triggered normal automatic shutdown. The complete automated suite passed
+`183/183` after the public privacy-notice and TTS-cancellation regressions were
+added.
+
+Phase 5 is next. Do not reopen or replace the verified receive/transport
 lifecycle unless a new deterministic regression proves it necessary.
 
 ## Outcome

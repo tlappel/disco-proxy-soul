@@ -107,8 +107,8 @@ run. You will change those when you add your own persona (step 10).
 
 Save and close.
 
-To enable the experimental single-speaker live transcription commands, also
-create a Gladia API key and set:
+To enable the experimental single-speaker live voice commands, also create a
+Gladia API key and set:
 
 ```env
 GLADIA_API_KEY=paste-the-gladia-key
@@ -117,6 +117,10 @@ VOICE_ENDPOINTING_SECONDS=0.1
 VOICE_QUEUE_SECONDS=2.0
 VOICE_GLADIA_STOP_SECONDS=15.0
 VOICE_MIN_SPEECH_MS=120
+VOICE_TURN_DEBOUNCE_SECONDS=1.5
+VOICE_TTS_ENABLED=false
+ELEVENLABS_API_KEY=
+ELEVENLABS_VOICE_ID=
 ```
 
 The key is used server-side and must remain in the private `.env` file.
@@ -181,19 +185,23 @@ client restart before slash commands appear.
 Do not run this twice at once with the same bot token. They will answer
 everything twice.
 
-### Optional — test live voice transcription
+### Optional — test live voice chat
 
 The bot needs **Connect** permission for the private voice channel, plus **View
 Channels**, **Send Messages**, and **Read Message History** in the text channel
-where transcripts should appear. **Speak** is not needed yet.
+where transcripts should appear. It also needs **Speak** when outbound speech
+is enabled.
 
 1. Add `GLADIA_API_KEY` and `VOICE_ENABLED=true` to the private `.env` file.
+   To hear replies, also set `VOICE_TTS_ENABLED=true`, `ELEVENLABS_API_KEY`,
+   and `ELEVENLABS_VOICE_ID`.
 2. Restart the bot, then join a private voice channel.
-3. Run `/voice-chat start`. A public notice explains that only the starter's
-   audio is sent to Gladia. No raw audio is saved.
-4. Speak normally. Partial guesses stay in the bot terminal; stable final
-   transcripts appear in the command channel. They do not reach companion
-   cognition or history in this phase.
+3. Run `/voice-chat start`. A public notice explains the Gladia transcription,
+   companion cognition, and optional ElevenLabs synthesis. No raw or generated
+   audio is saved.
+4. Speak normally. Partial guesses stay in the bot terminal. Accepted final
+   turns reach companion cognition/history exactly once; the response appears
+   as Discord text and, when enabled, is spoken in the voice channel.
 5. Run `/voice-chat status` to inspect queue drops and timing, then
    `/voice-chat stop` to close the session and disconnect.
 
