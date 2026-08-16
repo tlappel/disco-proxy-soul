@@ -438,14 +438,25 @@ clock drops were two, late samples were zero, Gladia completion was normal,
 and no warning remained. The full automated suite passed `203/203` after the
 user-facing cue regression was added.
 
-Phase 5C is next: bounded Gladia reconnect, long-session rotation, latency
-observability, and an explicit continuity scope above Discord channel scope.
-Keep recent working history local to its channel, but allow relevant memories
-to be recalled across voice and text when they belong to the same permitted
-companion-human relationship. Preserve source-channel provenance and never
-fall back to an unscoped all-channel search. Do not broaden the accepted cue
-contract into energy-only interruption without new echo measurements and
-deterministic regressions.
+Phase 5C is next: bounded Gladia reconnect, long-session rotation, and latency
+observability. Do not broaden the accepted cue contract into energy-only
+interruption without new echo measurements and deterministic regressions.
+
+### Phase 5C implementation checkpoint — awaiting live acceptance
+
+Latency summaries now report last/average/maximum final-transcript lag,
+cognition time, ElevenLabs first-frame time, and actual Discord first-playback
+frame time. Recoverable WebSocket endings reconnect to the same tokenized URL
+within a bounded retry policy. An ambiguously delivered PCM frame is counted
+and dropped rather than replayed.
+
+Long-running voice chat rotates to a new Gladia session at two hours fifty
+minutes. Rotation is sequential for compatibility with single-session account
+limits: the old session drains normally before the replacement connects.
+Replacement transcript timestamps are offset onto the existing local audio
+clock, and session IDs plus transport counters remain cumulative. Automated
+tests accelerate the rotation timer to milliseconds; the full suite passes
+`210/210`. A short live run with a temporary sixty-second threshold remains.
 
 ### Implement
 
@@ -459,9 +470,6 @@ deterministic regressions.
 - Preserve session IDs for result recovery without logging bearer URLs.
 - Surface DAVE frame drops, audio queue drops, STT latency, model latency, TTS
   first-byte latency, and playback latency.
-- Separate conversation location from continuity identity: retain per-channel
-  rolling history while permitting scoped cross-channel memory recall for the
-  same companion-human relationship.
 - Stop cleanly when the starter leaves, the bot is moved/disconnected, or the
   process shuts down.
 
@@ -470,8 +478,6 @@ deterministic regressions.
 - Injected transport failures do not deadlock Discord receive.
 - Playback cancellation does not stop listening.
 - Stop during STT, cognition, TTS, and playback is idempotent.
-- A memory formed in voice can be recalled from text and vice versa within the
-  same continuity scope; unrelated users and scopes remain excluded.
 - A dependency compatibility test continues to cover the pinned DAVE fork and
   corrupt-frame guard.
 
@@ -479,10 +485,21 @@ deterministic regressions.
 
 - Do not automatically upgrade beyond the pinned discord.py/receive-fork pair.
 - Do not resend unacknowledged Gladia bytes without an integration-tested rule.
-- Do not flatten every Discord channel into one history or enable cross-user
-  recall merely because the backing store contains multiple channel buckets.
 - Do not use the extension's approximate speaking-stop event as the only turn
   boundary.
+
+## Phase 5D — cross-surface continuity scope
+
+Separate conversation location from continuity identity. Keep recent working
+history local to its Discord channel, but allow relevant memory to be recalled
+across voice and text when both belong to the same permitted companion-human
+relationship. Preserve source-channel provenance and never fall back to an
+unscoped all-channel search.
+
+Verify that a memory formed in voice can be recalled from text and vice versa,
+while unrelated users and scopes remain excluded. Existing unscoped records
+must remain local unless an explicit, reviewable migration assigns ownership;
+do not infer that every record in a backing file belongs to the same person.
 
 ## Phase 6 — multi-speaker voice (deferred product decision)
 
