@@ -181,6 +181,8 @@ VOICE_TURN_DEBOUNCE_SECONDS=1.5
 VOICE_TTS_ENABLED=false
 ELEVENLABS_API_KEY=your-key
 ELEVENLABS_VOICE_ID=your-voice-id
+VOICE_BARGE_IN_ENABLED=false
+VOICE_BARGE_IN_MIN_SPEECH_MS=160
 ```
 
 Join a private voice channel and run `/voice-chat start`. The public notice
@@ -196,6 +198,9 @@ Fatal receive or Gladia failures stop and release the session automatically;
 shutdown remains cleanup-safe if its command task is cancelled.
 `VOICE_MIN_SPEECH_MS` controls the independent local speech-evidence gate;
 `VOICE_TURN_DEBOUNCE_SECONDS` controls nearby-final assembly.
+When `VOICE_BARGE_IN_ENABLED=true`, locally corroborated speech containing the
+companion's name plus `wait`, `stop`, `pause`, or `hold on` intentionally stops
+the current playback. Other overlapping speech remains queued behind it.
 `VOICE_GLADIA_STOP_SECONDS` gives Gladia Live V2 time to drain final
 transcripts and end its session; it is separate from Discord cleanup timing.
 If the starter leaves or moves to another voice channel, the live session

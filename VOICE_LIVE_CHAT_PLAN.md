@@ -414,9 +414,33 @@ processed the preserved turn without overlapping her own speech. Receive and
 event-loop queue drops were zero, late samples were zero, and the complete
 automated suite passed `199/199`.
 
-Phase 5B is next: measure echo and add explicit barge-in. Do not reinterpret
-Phase 5A's queued turn behavior as interruption; Naomi is intentionally not
-stopped by speech during this checkpoint.
+Phase 5A's queued turn behavior is not interruption; Naomi is intentionally
+not stopped by ordinary overlapping speech during this checkpoint.
+
+### Phase 5B checkpoint — accepted 2026-08-16
+
+Intentional barge-in is implemented as an opt-in control. During active
+playback, a transcript partial or final must contain the companion's name plus
+the narrow intent `wait`, `stop`, `pause`, or `hold on`. Its source audio must
+also overlap the current playback window and pass independent local speech
+evidence. Ordinary overlapping speech continues through Phase 5A's queue and
+does not stop Naomi.
+
+A corroborated partial may cancel playback for responsiveness, but partials
+remain forbidden from Discord text, cognition, and history. Only the later
+stable final can become a normal human turn. Intentional cancellation is
+counted separately from provider failure and completed spoken responses.
+
+Live acceptance produced exactly one corroborated playback-overlap final, one
+intentional barge-in cue, and one interrupted playback. Two stable turns
+reached cognition/text exactly once. Thread and event-loop drops were zero,
+clock drops were two, late samples were zero, Gladia completion was normal,
+and no warning remained. The full automated suite passed `203/203` after the
+user-facing cue regression was added.
+
+Phase 5C is next: bounded Gladia reconnect, long-session rotation, and latency
+observability. Do not broaden the accepted cue contract into energy-only
+interruption without new echo measurements and deterministic regressions.
 
 ### Implement
 

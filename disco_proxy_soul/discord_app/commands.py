@@ -11,18 +11,29 @@ from ..app import CompanionApp
 from .voice_session import VoiceSessionError, VoiceSessionManager, VoiceSessionStatus
 
 
-def live_start_notice(display_name: str, *, tts_enabled: bool) -> str:
+def live_start_notice(
+    display_name: str,
+    *,
+    tts_enabled: bool,
+    barge_in_name: str | None = None,
+) -> str:
     tts_disclosure = (
         " Naomi's response text will be sent to ElevenLabs for voice synthesis "
         "and played in the voice channel."
         if tts_enabled
         else " Naomi's response will appear as Discord text."
     )
+    barge_in_note = (
+        f' During playback, say "{barge_in_name}, wait" to interrupt intentionally.'
+        if barge_in_name
+        else ""
+    )
     return (
         f"🔴 **Live voice chat is starting for {display_name}.** Their voice "
         "audio is sent to Gladia for transcription. Accepted final turns reach "
         "companion cognition and appear in this channel."
-        f"{tts_disclosure} Live mode saves no raw WAV, PCM, or generated audio. "
+        f"{tts_disclosure}{barge_in_note} "
+        "Live mode saves no raw WAV, PCM, or generated audio. "
         "Use `/voice-chat stop` to end it."
     )
 
@@ -95,6 +106,11 @@ def register_commands(
             live_start_notice(
                 interaction.user.display_name,
                 tts_enabled=bool(voice_sessions.config.voice_tts_enabled),
+                barge_in_name=(
+                    companion
+                    if bool(voice_sessions.config.voice_barge_in_enabled)
+                    else None
+                ),
             )
         )
         try:
@@ -109,10 +125,10 @@ def register_commands(
             return
         await interaction.followup.send(
             f"Listening to **{status.starter_name}** in <#{status.channel_id}>. "
-            "Other speakers are ignored in this first slice."
+            "Only the starter is transcribed in this single-human mode."
         )
 
-    @voice_chat.command(name="stop", description="Stop this server's live transcription")
+    @voice_chat.command(name="stop", description="Stop this server's live voice chat")
     async def slash_voice_chat_stop(interaction: discord.Interaction) -> None:
         guild = interaction.guild
         if guild is None:
@@ -124,21 +140,21 @@ def register_commands(
         status = await voice_sessions.stop(guild.id)
         if status is None:
             await interaction.followup.send(
-                "No live voice transcription session is running.", ephemeral=True
+                "No live voice chat session is running.", ephemeral=True
             )
             return
         await interaction.followup.send(
-            "Live voice transcription stopped. No raw audio was saved.\n"
+            "Live voice chat stopped. No raw audio was saved.\n"
             + live_status_text(status)
         )
 
-    @voice_chat.command(name="status", description="Show live transcription health")
+    @voice_chat.command(name="status", description="Show live voice chat health")
     async def slash_voice_chat_status(interaction: discord.Interaction) -> None:
         guild = interaction.guild
         status = voice_sessions.status(guild.id) if guild is not None else None
         if status is None:
             await interaction.response.send_message(
-                "No live voice transcription session is running.", ephemeral=True
+                "No live voice chat session is running.", ephemeral=True
             )
             return
         await interaction.response.send_message(live_status_text(status), ephemeral=True)

@@ -20,6 +20,14 @@ class LiveVoiceNoticeTests(unittest.TestCase):
         self.assertIn("Discord text", notice)
         self.assertNotIn("ElevenLabs", notice)
 
+    def test_enabled_barge_in_notice_names_explicit_cue(self):
+        notice = live_start_notice(
+            "Travis",
+            tts_enabled=True,
+            barge_in_name="Naomi",
+        )
+        self.assertIn('say "Naomi, wait" to interrupt intentionally', notice)
+
 
 if __name__ == "__main__":
     unittest.main()

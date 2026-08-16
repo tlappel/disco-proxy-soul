@@ -121,6 +121,8 @@ VOICE_TURN_DEBOUNCE_SECONDS=1.5
 VOICE_TTS_ENABLED=false
 ELEVENLABS_API_KEY=
 ELEVENLABS_VOICE_ID=
+VOICE_BARGE_IN_ENABLED=false
+VOICE_BARGE_IN_MIN_SPEECH_MS=160
 ```
 
 The key is used server-side and must remain in the private `.env` file.
@@ -236,7 +238,9 @@ is enabled.
 
 1. Add `GLADIA_API_KEY` and `VOICE_ENABLED=true` to the private `.env` file.
    To hear replies, also set `VOICE_TTS_ENABLED=true`, `ELEVENLABS_API_KEY`,
-   and `ELEVENLABS_VOICE_ID`.
+   and `ELEVENLABS_VOICE_ID`. To enable intentional interruption, set
+   `VOICE_BARGE_IN_ENABLED=true`; say the companion's name followed by `wait`,
+   `stop`, `pause`, or `hold on` while they are speaking.
 2. Restart the bot, then join a private voice channel.
 3. Run `/voice-chat start`. A public notice explains the Gladia transcription,
    companion cognition, and optional ElevenLabs synthesis. No raw or generated
