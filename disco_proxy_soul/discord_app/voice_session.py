@@ -152,7 +152,7 @@ class VoiceSessionCounters:
     rejected_finals: int = 0
     companion_responses: int = 0
     spoken_responses: int = 0
-    finals_queued_during_playback: int = 0
+    finals_spoken_during_playback: int = 0
     report_drops: int = 0
 
 
@@ -713,6 +713,8 @@ class VoiceSession:
             capacity_frames=max(1, math.ceil(playback_seconds / FRAME_SECONDS))
         )
         self._playback_active = False
+        self._playback_started_at: float | None = None
+        self._playback_windows: deque[tuple[float, float]] = deque(maxlen=64)
         self._pre_roll_seconds = max(0.0, pre_roll_seconds)
         self._shutdown_step_seconds = max(0.01, shutdown_step_seconds)
         self._gladia_stop_seconds = max(
@@ -1077,8 +1079,8 @@ class VoiceSession:
                         accepted = await self._turns.offer(event)
                         if not accepted:
                             self.counters.rejected_finals += 1
-                        elif self._playback_active:
-                            self.counters.finals_queued_during_playback += 1
+                        elif self._overlaps_playback(event):
+                            self.counters.finals_spoken_during_playback += 1
                     else:
                         self.counters.partial_transcripts += 1
                         print(f"[voice:{self.guild_id}] [partial] {text}")
@@ -1133,12 +1135,19 @@ class VoiceSession:
                             "Discord voice connection ended before outbound speech"
                         )
                     self._playback_active = True
+                    self._playback_started_at = self._speech_evidence.duration
                     try:
                         await self._playback.play(
                             self.voice_client,
                             self._tts.stream_pcm(reply),
                         )
                     finally:
+                        started_at = self._playback_started_at
+                        if started_at is not None:
+                            self._playback_windows.append(
+                                (started_at, self._speech_evidence.duration)
+                            )
+                        self._playback_started_at = None
                         self._playback_active = False
                     self.counters.spoken_responses += 1
         except asyncio.CancelledError:
@@ -1380,7 +1389,7 @@ class VoiceSession:
             "playout_reanchors=%s "
             "clock_dropped=%s pending_drops=%s late_samples=%s "
             "partials=%s finals=%s accepted_turns=%s rejected_finals=%s "
-            "responses=%s spoken=%s queued_during_playback=%s",
+            "responses=%s spoken=%s finals_during_playback=%s",
             status.guild_id,
             status.channel_id,
             status.starter_user_id,
@@ -1402,7 +1411,22 @@ class VoiceSession:
             counters.rejected_finals,
             counters.companion_responses,
             counters.spoken_responses,
-            counters.finals_queued_during_playback,
+            counters.finals_spoken_during_playback,
+        )
+
+    def _overlaps_playback(self, event: TranscriptUpdate) -> bool:
+        event_start = float(event.start)
+        event_end = float(event.end)
+        if event_end < event_start:
+            event_start, event_end = event_end, event_start
+        windows = tuple(self._playback_windows)
+        if self._playback_started_at is not None:
+            windows += (
+                (self._playback_started_at, self._speech_evidence.duration),
+            )
+        return any(
+            event_end > window_start and event_start < window_end
+            for window_start, window_end in windows
         )
 
     async def _disconnect_voice_client(self, voice_client: Any | None) -> bool:

@@ -1262,7 +1262,7 @@ class VoiceSessionAsyncTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         await self.wait_for(
-            lambda: session.counters.finals_queued_during_playback == 1
+            lambda: session.counters.finals_spoken_during_playback == 1
         )
         self.assertEqual(len(app.calls), 1)
         self.assertEqual(playback.max_active, 1)
@@ -1321,7 +1321,7 @@ class VoiceSessionAsyncTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         await self.wait_for(
-            lambda: session.counters.finals_queued_during_playback == 1
+            lambda: session.counters.finals_spoken_during_playback == 1
         )
 
         status = await session.stop()
@@ -1331,6 +1331,62 @@ class VoiceSessionAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(app.calls), 1)
         self.assertEqual(len(app.history), 2)
         self.assertEqual(session.counters.spoken_responses, 0)
+
+    async def test_delayed_final_correlates_to_completed_playback_window(self) -> None:
+        app = FakeCompanion(reply="Clock-aligned reply.")
+        playback = BlockingPlayback()
+        tts_config = config(
+            voice_tts_enabled=True,
+            elevenlabs_api_key="tts-key",
+            elevenlabs_voice_id="voice-id",
+        )
+        session, _, gladia, _ = self.make_session(
+            app=app,
+            playback=playback,
+            session_config=tts_config,
+        )
+        await session.start()
+
+        first_start = session._speech_evidence.duration
+        for _ in range(10):
+            session._speech_evidence.observe_sent_frame(mono_frame(1000))
+        await gladia.events.put(
+            transcript(
+                "Begin playback",
+                final=True,
+                utterance_id="clock-window-one",
+                start=first_start,
+                end=session._speech_evidence.duration,
+            )
+        )
+        await playback.entered.wait()
+
+        overlap_start = session._speech_evidence.duration
+        for _ in range(10):
+            session._speech_evidence.observe_sent_frame(mono_frame(1000))
+        overlap_end = session._speech_evidence.duration
+        playback.release.set()
+        await self.wait_for(lambda: session.counters.spoken_responses == 1)
+        self.assertFalse(session.status().playback_active)
+
+        await gladia.events.put(
+            transcript(
+                "Final arrived later",
+                final=True,
+                utterance_id="clock-window-two",
+                start=overlap_start,
+                end=overlap_end,
+            )
+        )
+        await self.wait_for(
+            lambda: session.counters.finals_spoken_during_playback == 1
+        )
+        await self.wait_for(lambda: len(app.calls) == 2)
+        self.assertEqual(
+            app.calls[1][1],
+            "[Travis]: Final arrived later",
+        )
+        await session.stop()
 
     async def test_stop_cancels_inflight_cognition_without_history_effect(self) -> None:
         gate = asyncio.Event()
