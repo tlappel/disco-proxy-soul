@@ -442,7 +442,7 @@ Phase 5C is next: bounded Gladia reconnect, long-session rotation, and latency
 observability. Do not broaden the accepted cue contract into energy-only
 interruption without new echo measurements and deterministic regressions.
 
-### Phase 5C implementation checkpoint — awaiting live acceptance
+### Phase 5C accepted — 2026-08-16
 
 Latency summaries now report last/average/maximum final-transcript lag,
 cognition time, ElevenLabs first-frame time, and actual Discord first-playback
@@ -456,7 +456,21 @@ limits: the old session drains normally before the replacement connects.
 Replacement transcript timestamps are offset onto the existing local audio
 clock, and session IDs plus transport counters remain cumulative. Automated
 tests accelerate the rotation timer to milliseconds; the full suite passes
-`210/210`. A short live run with a temporary sixty-second threshold remains.
+`210/210`.
+
+Live acceptance used a temporary sixty-second threshold and crossed three
+planned rotations across four Gladia sessions. Three accepted turns produced
+exactly three text replies and three spoken replies. Reconnects, failed
+attempts, ambiguous-frame drops, thread drops, event-loop drops, and late
+samples were all zero. Transport completion was normal and no warning remained.
+
+The repaired RTP path reported 54 clock drops, 17.58 seconds of RTP gaps, 31
+discontinuities, and 18 playout reanchors during the longer run; those repairs
+did not produce queue loss or late samples. Average/maximum latency was 982/1296
+ms for STT, 7683/12332 ms for cognition, 345/441 ms for ElevenLabs first audio,
+and 346/441 ms for the first Discord playback frame. The measurement makes the
+next optimization target clear: model cognition dominates response latency,
+while STT and the speech path remain comparatively fast.
 
 ### Implement
 
