@@ -10,4 +10,3 @@ personas/*
 !personas/example/**
 .idea/
 .vscode/
-companion-private/
