@@ -562,6 +562,10 @@ class VoiceConfigTests(unittest.TestCase):
                 "VOICE_ENDPOINTING_SECONDS": "0.2",
                 "VOICE_QUEUE_SECONDS": "3.5",
                 "VOICE_GLADIA_STOP_SECONDS": "17.5",
+                "VOICE_GLADIA_RECONNECT_ATTEMPTS": "4",
+                "VOICE_GLADIA_RECONNECT_INITIAL_DELAY_SECONDS": "0.75",
+                "VOICE_GLADIA_RECONNECT_MAX_DELAY_SECONDS": "6.0",
+                "VOICE_GLADIA_RECONNECT_CONNECT_TIMEOUT_SECONDS": "8.0",
                 "VOICE_MIN_SPEECH_MS": "200",
                 "VOICE_TURN_DEBOUNCE_SECONDS": "0.8",
                 "VOICE_TTS_ENABLED": "true",
@@ -585,6 +589,14 @@ class VoiceConfigTests(unittest.TestCase):
         self.assertEqual(loaded.voice_endpointing_seconds, 0.2)
         self.assertEqual(loaded.voice_queue_seconds, 3.5)
         self.assertEqual(loaded.voice_gladia_stop_seconds, 17.5)
+        self.assertEqual(loaded.voice_gladia_reconnect_attempts, 4)
+        self.assertEqual(
+            loaded.voice_gladia_reconnect_initial_delay_seconds, 0.75
+        )
+        self.assertEqual(loaded.voice_gladia_reconnect_max_delay_seconds, 6.0)
+        self.assertEqual(
+            loaded.voice_gladia_reconnect_connect_timeout_seconds, 8.0
+        )
         self.assertEqual(loaded.voice_min_speech_ms, 200)
         self.assertEqual(loaded.voice_turn_debounce_seconds, 0.8)
         self.assertTrue(loaded.voice_tts_enabled)
@@ -1790,6 +1802,9 @@ class VoiceSessionAsyncTests(unittest.IsolatedAsyncioTestCase):
         session.counters.playout_reanchors = 2
         session.counters.clock_dropped_packets = 4
         session.counters.late_audio_samples = 5
+        session.gladia.result.reconnects = 1
+        session.gladia.result.reconnect_failures = 2
+        session.gladia.result.ambiguous_frames_dropped = 3
         session.counters.partial_transcripts = 6
         session.counters.final_transcripts = 7
         with self.assertLogs(
@@ -1806,6 +1821,9 @@ class VoiceSessionAsyncTests(unittest.IsolatedAsyncioTestCase):
             "playout_reanchors=2",
             "clock_dropped=4",
             "late_samples=5",
+            "gladia_reconnects=1",
+            "gladia_reconnect_failures=2",
+            "gladia_ambiguous_frames=3",
             "partials=6",
             "finals=7",
         ):

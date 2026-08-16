@@ -201,6 +201,9 @@ class VoiceSessionCounters:
     finals_spoken_during_playback: int = 0
     barge_in_cues: int = 0
     interrupted_playbacks: int = 0
+    gladia_reconnects: int = 0
+    gladia_reconnect_failures: int = 0
+    gladia_ambiguous_frames_dropped: int = 0
     report_drops: int = 0
     stt_final_latency: LatencyMetric = dataclass_field(default_factory=LatencyMetric)
     cognition_latency: LatencyMetric = dataclass_field(default_factory=LatencyMetric)
@@ -830,6 +833,17 @@ class VoiceSession:
     def status(self) -> VoiceSessionStatus:
         if self.sink is not None:
             self.counters.ingress_drops = self.sink.dropped_frames
+        if self.gladia is not None:
+            result = self.gladia.result
+            self.counters.gladia_reconnects = int(
+                getattr(result, "reconnects", 0)
+            )
+            self.counters.gladia_reconnect_failures = int(
+                getattr(result, "reconnect_failures", 0)
+            )
+            self.counters.gladia_ambiguous_frames_dropped = int(
+                getattr(result, "ambiguous_frames_dropped", 0)
+            )
         completion = (
             self.gladia.completion.value
             if self.gladia is not None
@@ -930,7 +944,42 @@ class VoiceSession:
             self.gladia = self._gladia_factory(
                 self.config.gladia_api_key,
                 WaveFormat(SAMPLE_RATE, 1, 16),
-                config=GladiaLiveConfig(endpointing=self.config.voice_endpointing_seconds),
+                config=GladiaLiveConfig(
+                    endpointing=self.config.voice_endpointing_seconds,
+                    reconnect_attempts=int(
+                        getattr(self.config, "voice_gladia_reconnect_attempts", 3)
+                    ),
+                    reconnect_initial_delay=float(
+                        getattr(
+                            self.config,
+                            "voice_gladia_reconnect_initial_delay_seconds",
+                            0.5,
+                        )
+                    ),
+                    reconnect_max_delay=max(
+                        float(
+                            getattr(
+                                self.config,
+                                "voice_gladia_reconnect_initial_delay_seconds",
+                                0.5,
+                            )
+                        ),
+                        float(
+                            getattr(
+                                self.config,
+                                "voice_gladia_reconnect_max_delay_seconds",
+                                5.0,
+                            )
+                        ),
+                    ),
+                    reconnect_connect_timeout=float(
+                        getattr(
+                            self.config,
+                            "voice_gladia_reconnect_connect_timeout_seconds",
+                            10.0,
+                        )
+                    ),
+                ),
             )
             await self.gladia.connect()
             self._raise_if_starter_left_during_start()
@@ -1110,9 +1159,10 @@ class VoiceSession:
                     except asyncio.QueueEmpty:
                         break
                 frame = clock.render()
-                await self.gladia.send_pcm(frame)
-                self._speech_evidence.observe_sent_frame(frame)
-                self.counters.sent_frames += 1
+                delivered = await self.gladia.send_pcm(frame)
+                if delivered is not False:
+                    self._speech_evidence.observe_sent_frame(frame)
+                    self.counters.sent_frames += 1
                 deadline += FRAME_SECONDS
                 now = loop.time()
                 if deadline < now - (FRAME_SECONDS * 5):
@@ -1512,6 +1562,8 @@ class VoiceSession:
             "sent_frames=%s rtp_gap_samples=%s rtp_discontinuities=%s "
             "playout_reanchors=%s "
             "clock_dropped=%s pending_drops=%s late_samples=%s "
+            "gladia_reconnects=%s gladia_reconnect_failures=%s "
+            "gladia_ambiguous_frames=%s "
             "partials=%s finals=%s accepted_turns=%s rejected_finals=%s "
             "responses=%s spoken=%s finals_during_playback=%s "
             "barge_cues=%s interrupted_playbacks=%s "
@@ -1534,6 +1586,9 @@ class VoiceSession:
             counters.clock_dropped_packets,
             counters.pending_drops,
             counters.late_audio_samples,
+            counters.gladia_reconnects,
+            counters.gladia_reconnect_failures,
+            counters.gladia_ambiguous_frames_dropped,
             counters.partial_transcripts,
             counters.final_transcripts,
             counters.accepted_turns,

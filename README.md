@@ -176,6 +176,10 @@ VOICE_ENABLED=true
 VOICE_ENDPOINTING_SECONDS=0.1
 VOICE_QUEUE_SECONDS=2.0
 VOICE_GLADIA_STOP_SECONDS=15.0
+VOICE_GLADIA_RECONNECT_ATTEMPTS=3
+VOICE_GLADIA_RECONNECT_INITIAL_DELAY_SECONDS=0.5
+VOICE_GLADIA_RECONNECT_MAX_DELAY_SECONDS=5.0
+VOICE_GLADIA_RECONNECT_CONNECT_TIMEOUT_SECONDS=10.0
 VOICE_MIN_SPEECH_MS=120
 VOICE_TURN_DEBOUNCE_SECONDS=1.5
 VOICE_TTS_ENABLED=false
@@ -196,6 +200,10 @@ silence for endpointing, bounds both sides of the receive-thread handoff,
 reports drops and RTP discontinuities, and never writes a WAV or PCM file.
 Fatal receive or Gladia failures stop and release the session automatically;
 shutdown remains cleanup-safe if its command task is cancelled.
+An unexpectedly closed Gladia WebSocket reconnects to the same temporary URL
+within the configured retry budget. A PCM frame whose delivery became
+ambiguous is counted and dropped rather than replayed; exhausted retries stop
+the session normally through the existing failure path.
 `VOICE_MIN_SPEECH_MS` controls the independent local speech-evidence gate;
 `VOICE_TURN_DEBOUNCE_SECONDS` controls nearby-final assembly.
 When `VOICE_BARGE_IN_ENABLED=true`, locally corroborated speech containing the

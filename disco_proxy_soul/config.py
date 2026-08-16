@@ -100,6 +100,10 @@ class RuntimeConfig:
     voice_endpointing_seconds: float
     voice_queue_seconds: float
     voice_gladia_stop_seconds: float
+    voice_gladia_reconnect_attempts: int
+    voice_gladia_reconnect_initial_delay_seconds: float
+    voice_gladia_reconnect_max_delay_seconds: float
+    voice_gladia_reconnect_connect_timeout_seconds: float
     voice_min_speech_ms: int
     voice_turn_debounce_seconds: float
     voice_tts_enabled: bool
@@ -191,6 +195,34 @@ class RuntimeConfig:
                 15.0,
                 1.0,
                 120.0,
+            ),
+            voice_gladia_reconnect_attempts=_bounded_int(
+                "VOICE_GLADIA_RECONNECT_ATTEMPTS",
+                os.getenv("VOICE_GLADIA_RECONNECT_ATTEMPTS"),
+                3,
+                0,
+                10,
+            ),
+            voice_gladia_reconnect_initial_delay_seconds=_bounded_float(
+                "VOICE_GLADIA_RECONNECT_INITIAL_DELAY_SECONDS",
+                os.getenv("VOICE_GLADIA_RECONNECT_INITIAL_DELAY_SECONDS"),
+                0.5,
+                0.05,
+                30.0,
+            ),
+            voice_gladia_reconnect_max_delay_seconds=_bounded_float(
+                "VOICE_GLADIA_RECONNECT_MAX_DELAY_SECONDS",
+                os.getenv("VOICE_GLADIA_RECONNECT_MAX_DELAY_SECONDS"),
+                5.0,
+                0.05,
+                60.0,
+            ),
+            voice_gladia_reconnect_connect_timeout_seconds=_bounded_float(
+                "VOICE_GLADIA_RECONNECT_CONNECT_TIMEOUT_SECONDS",
+                os.getenv("VOICE_GLADIA_RECONNECT_CONNECT_TIMEOUT_SECONDS"),
+                10.0,
+                0.5,
+                60.0,
             ),
             voice_min_speech_ms=_bounded_int(
                 "VOICE_MIN_SPEECH_MS",

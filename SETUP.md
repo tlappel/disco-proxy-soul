@@ -116,6 +116,10 @@ VOICE_ENABLED=true
 VOICE_ENDPOINTING_SECONDS=0.1
 VOICE_QUEUE_SECONDS=2.0
 VOICE_GLADIA_STOP_SECONDS=15.0
+VOICE_GLADIA_RECONNECT_ATTEMPTS=3
+VOICE_GLADIA_RECONNECT_INITIAL_DELAY_SECONDS=0.5
+VOICE_GLADIA_RECONNECT_MAX_DELAY_SECONDS=5.0
+VOICE_GLADIA_RECONNECT_CONNECT_TIMEOUT_SECONDS=10.0
 VOICE_MIN_SPEECH_MS=120
 VOICE_TURN_DEBOUNCE_SECONDS=1.5
 VOICE_TTS_ENABLED=false
@@ -127,6 +131,8 @@ VOICE_BARGE_IN_MIN_SPEECH_MS=160
 
 The key is used server-side and must remain in the private `.env` file.
 The Gladia stop deadline allows final transcripts to drain during shutdown.
+The reconnect settings bound same-session recovery after an unexpected socket
+closure. Ambiguous audio is never replayed.
 The session also stops automatically if its starter leaves or changes voice channels.
 
 ## Step 8 — Make it *them* (optional, first run can skip)

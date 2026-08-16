@@ -213,6 +213,36 @@ class FakeSuccessHttpSession:
         self.closed = True
 
 
+class SequencedWebSocketHttpSession(FakeSuccessHttpSession):
+    def __init__(self, *outcomes) -> None:
+        super().__init__(None)
+        self.outcomes = list(outcomes)
+        self.connected_urls: list[str] = []
+
+    async def ws_connect(self, url: str, *, heartbeat: int):
+        self.connected_urls.append(url)
+        if not self.outcomes:
+            raise RuntimeError("no configured WebSocket outcome")
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
+class BlockingReconnectHttpSession(FakeSuccessHttpSession):
+    def __init__(self, first: FakeWebSocket) -> None:
+        super().__init__(first)
+        self.connect_calls = 0
+        self.reconnect_started = asyncio.Event()
+
+    async def ws_connect(self, url: str, *, heartbeat: int):
+        self.connect_calls += 1
+        if self.connect_calls == 1:
+            return self.websocket
+        self.reconnect_started.set()
+        await asyncio.Future()
+
+
 class BlockingRequest:
     def __init__(self) -> None:
         self.entered = asyncio.Event()
@@ -1054,6 +1084,124 @@ class GladiaLiveAsyncTests(unittest.IsolatedAsyncioTestCase):
         await session.stop(timeout=1)
         self.assertEqual(session.state, SessionState.STOPPED)
         self.assertTrue(websocket.closed)
+
+    async def test_abnormal_close_reconnects_same_session_url(self) -> None:
+        first = FakeWebSocket(auto_end=False)
+        second = FakeWebSocket()
+        http = SequencedWebSocketHttpSession(first, second)
+        session = GladiaLiveSession(
+            "secret",
+            WaveFormat(48_000, 1, 16),
+            config=GladiaLiveConfig(
+                reconnect_attempts=2,
+                reconnect_initial_delay=0,
+                reconnect_max_delay=0,
+            ),
+            http_session=http,
+        )
+        await session.connect()
+
+        await first.push(aiohttp.WSMsgType.CLOSED)
+        for _ in range(100):
+            if session.result.reconnects == 1:
+                break
+            await asyncio.sleep(0)
+
+        self.assertEqual(session.result.reconnects, 1)
+        self.assertEqual(session.state, SessionState.CONNECTED)
+        self.assertFalse(session._receiver.done())
+        self.assertEqual(len(set(http.connected_urls)), 1)
+        self.assertTrue(await session.send_pcm(b"\x01\x02"))
+        self.assertEqual(second.sent_bytes, [b"\x01\x02"])
+        await session.stop(timeout=1)
+        self.assertEqual(session.completion, CompletionState.NORMAL)
+
+    async def test_ambiguous_send_frame_is_dropped_not_replayed(self) -> None:
+        first = FakeWebSocket(
+            auto_end=False,
+            send_error=RuntimeError("delivery unknown token=secret"),
+        )
+        second = FakeWebSocket()
+        http = SequencedWebSocketHttpSession(first, second)
+        session = GladiaLiveSession(
+            "secret",
+            WaveFormat(48_000, 1, 16),
+            config=GladiaLiveConfig(
+                reconnect_attempts=1,
+                reconnect_initial_delay=0,
+                reconnect_max_delay=0,
+            ),
+            http_session=http,
+        )
+        await session.connect()
+
+        self.assertFalse(await session.send_pcm(b"ambiguous"))
+        self.assertEqual(second.sent_bytes, [])
+        self.assertEqual(session.result.ambiguous_frames_dropped, 1)
+        self.assertTrue(await session.send_pcm(b"next"))
+        self.assertEqual(second.sent_bytes, [b"next"])
+        await session.stop(timeout=1)
+
+    async def test_reconnect_exhaustion_is_bounded_and_redacted(self) -> None:
+        first = FakeWebSocket(auto_end=False)
+        failure = RuntimeError(
+            "connect key=secret wss://api.gladia.io/v2/live?token=never-log"
+        )
+        http = SequencedWebSocketHttpSession(first, failure, failure)
+        session = GladiaLiveSession(
+            "secret",
+            WaveFormat(48_000, 1, 16),
+            config=GladiaLiveConfig(
+                reconnect_attempts=2,
+                reconnect_initial_delay=0,
+                reconnect_max_delay=0,
+                reconnect_connect_timeout=0.1,
+            ),
+            http_session=http,
+        )
+        await session.connect()
+        await first.push(aiohttp.WSMsgType.CLOSED)
+
+        await session._receiver
+        rendered = "\n".join(session.result.errors)
+        self.assertEqual(session.result.reconnect_failures, 2)
+        self.assertEqual(session.state, SessionState.FAILED)
+        self.assertEqual(session.completion, CompletionState.ABNORMAL)
+        self.assertNotIn("secret", rendered)
+        self.assertNotIn("never-log", rendered)
+        self.assertNotIn("wss://", rendered)
+        try:
+            await session.stop(timeout=0.5)
+        except GladiaTransportError:
+            pass
+
+    async def test_stop_during_reconnect_is_bounded_and_terminal(self) -> None:
+        first = FakeWebSocket(auto_end=False)
+        http = BlockingReconnectHttpSession(first)
+        session = GladiaLiveSession(
+            "secret",
+            WaveFormat(48_000, 1, 16),
+            config=GladiaLiveConfig(
+                reconnect_attempts=1,
+                reconnect_initial_delay=0,
+                reconnect_max_delay=0,
+                reconnect_connect_timeout=10,
+            ),
+            http_session=http,
+        )
+        await session.connect()
+        await first.push(aiohttp.WSMsgType.CLOSED)
+        await http.reconnect_started.wait()
+
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        try:
+            await session.stop(timeout=0.1)
+        except GladiaTransportError:
+            pass
+        self.assertLess(loop.time() - started, 0.5)
+        self.assertEqual(session.state, SessionState.STOPPED)
+        self.assertTrue(session._receiver.done())
 
     async def test_stop_recording_receive_and_close_errors_are_redacted(self) -> None:
         secret_error = RuntimeError(

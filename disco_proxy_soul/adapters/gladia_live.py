@@ -60,6 +60,10 @@ class GladiaLiveConfig:
     downmix_stereo: bool = True
     partial_state_limit: int = 32
     event_queue_limit: int = 64
+    reconnect_attempts: int = 0
+    reconnect_initial_delay: float = 0.5
+    reconnect_max_delay: float = 5.0
+    reconnect_connect_timeout: float = 10.0
 
 
 @dataclass(frozen=True)
@@ -144,6 +148,7 @@ class SessionState(str, Enum):
     NEW = "new"
     CONNECTING = "connecting"
     CONNECTED = "connected"
+    RECONNECTING = "reconnecting"
     STOPPING = "stopping"
     STOPPED = "stopped"
     FAILED = "failed"
@@ -162,6 +167,10 @@ class GladiaCriticalEventOverflow(RuntimeError):
 
 class GladiaTransportError(RuntimeError):
     """A redacted Gladia transport failure safe for public diagnostics."""
+
+
+class _GladiaWebSocketClosed(GladiaTransportError):
+    """Unexpected socket ending that is reported through the public event stream."""
 
 
 def _is_critical_event(event: GladiaEvent) -> bool:
@@ -283,6 +292,9 @@ class GladiaLiveResult:
     session_id: str | None = None
     completion: CompletionState = CompletionState.PENDING
     completion_reason: str | None = None
+    reconnects: int = 0
+    reconnect_failures: int = 0
+    ambiguous_frames_dropped: int = 0
 
     @property
     def transcript(self) -> str:
@@ -604,6 +616,16 @@ class GladiaLiveSession:
             raise ValueError("partial_state_limit must be positive")
         if live_config.event_queue_limit < 4:
             raise ValueError("event_queue_limit must be at least 4")
+        if live_config.reconnect_attempts < 0:
+            raise ValueError("reconnect_attempts cannot be negative")
+        if live_config.reconnect_initial_delay < 0:
+            raise ValueError("reconnect_initial_delay cannot be negative")
+        if live_config.reconnect_max_delay < live_config.reconnect_initial_delay:
+            raise ValueError(
+                "reconnect_max_delay cannot be less than reconnect_initial_delay"
+            )
+        if live_config.reconnect_connect_timeout <= 0:
+            raise ValueError("reconnect_connect_timeout must be positive")
         self._api_key = api_key
         self.audio_format = audio_format
         self.config = live_config
@@ -611,6 +633,7 @@ class GladiaLiveSession:
         self._http = http_session
         self._owns_http = http_session is None
         self._websocket: aiohttp.ClientWebSocketResponse | None = None
+        self._websocket_url: str | None = None
         self._handshake_websocket: aiohttp.ClientWebSocketResponse | None = None
         self._receiver: asyncio.Task[None] | None = None
         self._events = _BoundedEventBuffer(live_config.event_queue_limit)
@@ -622,6 +645,8 @@ class GladiaLiveSession:
         self._state = SessionState.NEW
         self._state_lock = asyncio.Lock()
         self._stop_lock = asyncio.Lock()
+        self._reconnect_lock = asyncio.Lock()
+        self._transport_ready = asyncio.Event()
         self._connect_task: asyncio.Task[Any] | None = None
         self._shutdown_deadline: float | None = None
         self._active_sends: set[asyncio.Task[Any]] = set()
@@ -729,8 +754,10 @@ class GladiaLiveSession:
                     self.session_id = session_id
                     self.result.session_id = session_id
                     self._websocket = websocket
+                    self._websocket_url = websocket_url
                     self._handshake_websocket = None
                     self._state = SessionState.CONNECTED
+                    self._transport_ready.set()
                     self._connect_task = None
                     self._receiver = asyncio.create_task(
                         self._receive_messages(),
@@ -778,49 +805,151 @@ class GladiaLiveSession:
                 None, safe_detail or type(exc).__name__
             ) from None
 
-    async def send_pcm(self, chunk: bytes) -> None:
+    async def send_pcm(self, chunk: bytes) -> bool:
+        """Send one PCM frame.
+
+        ``False`` means delivery became ambiguous, the frame was deliberately
+        not replayed, and the transport recovered for the next frame.
+        """
+
         if not isinstance(chunk, bytes):
             raise TypeError("PCM chunk must be bytes")
         if not chunk:
-            return
+            return True
         current = asyncio.current_task()
         if current is None:
             raise RuntimeError("send_pcm requires an asyncio task")
         async with self._state_lock:
-            if self._state is not SessionState.CONNECTED or self._websocket is None:
-                raise RuntimeError(f"Cannot send PCM while session is {self._state.value}")
-            websocket = self._websocket
             self._active_sends.add(current)
 
-        public_error: GladiaTransportError | None = None
-        cancelled = False
         try:
-            await websocket.send_bytes(chunk)
+            while True:
+                async with self._state_lock:
+                    if (
+                        self._state is SessionState.CONNECTED
+                        and self._websocket is not None
+                    ):
+                        websocket = self._websocket
+                        break
+                    if self._state is SessionState.RECONNECTING:
+                        ready = self._transport_ready
+                    else:
+                        raise RuntimeError(
+                            f"Cannot send PCM while session is {self._state.value}"
+                        )
+                await ready.wait()
+
+            try:
+                await websocket.send_bytes(chunk)
+                return True
+            except Exception as exc:
+                safe = redact_sensitive_text(
+                    str(exc), self._api_key, self._websocket_url or ""
+                )
+                error = GladiaTransportError(
+                    f"Gladia PCM send failed: {safe or type(exc).__name__}"
+                )
+                recovered = await self._reconnect_transport(websocket)
+                if recovered:
+                    self.result.ambiguous_frames_dropped += 1
+                    return False
+                self._mark_abnormal(str(error))
+                raise error from None
         except asyncio.CancelledError:
-            cancelled = True
-        except Exception as exc:
-            safe = redact_sensitive_text(str(exc), self._api_key)
-            public_error = GladiaTransportError(
-                f"Gladia PCM send failed: {safe or type(exc).__name__}"
-            )
+            async with self._state_lock:
+                stopping = self._state in {SessionState.STOPPING, SessionState.STOPPED}
+                if not stopping and self._state is SessionState.CONNECTED:
+                    self._state = SessionState.FAILED
+            if not stopping:
+                self._mark_abnormal("Gladia PCM send was cancelled")
+            raise
         finally:
             async with self._state_lock:
                 self._active_sends.discard(current)
-                if (
-                    (cancelled or public_error is not None)
-                    and self._state is SessionState.CONNECTED
-                ):
-                    self._state = SessionState.FAILED
-                    self._mark_abnormal(
-                        "Gladia PCM send was cancelled"
-                        if cancelled
-                        else str(public_error)
-                    )
 
-        if cancelled:
-            raise asyncio.CancelledError
-        if public_error is not None:
-            raise public_error from None
+    async def _reconnect_transport(self, failed_websocket: Any) -> bool:
+        """Reconnect the same Gladia session URL within a bounded retry policy."""
+
+        async with self._reconnect_lock:
+            async with self._state_lock:
+                if self._state in {SessionState.STOPPING, SessionState.STOPPED}:
+                    return False
+                if (
+                    self._state is SessionState.CONNECTED
+                    and self._websocket is not None
+                    and self._websocket is not failed_websocket
+                    and not self._websocket.closed
+                ):
+                    return True
+                websocket_url = self._websocket_url
+                http = self._http
+                self._websocket = None
+                self._state = SessionState.RECONNECTING
+                self._transport_ready.clear()
+
+            await self._retire_reconnect_websocket(failed_websocket)
+
+            attempts = self.config.reconnect_attempts
+            delay = self.config.reconnect_initial_delay
+            for attempt in range(attempts):
+                async with self._state_lock:
+                    if self._state is not SessionState.RECONNECTING:
+                        break
+                if attempt and delay:
+                    await asyncio.sleep(delay)
+                    delay = min(
+                        self.config.reconnect_max_delay,
+                        max(delay * 2, self.config.reconnect_initial_delay),
+                    )
+                candidate = None
+                try:
+                    if http is None or websocket_url is None:
+                        break
+                    candidate = await asyncio.wait_for(
+                        http.ws_connect(websocket_url, heartbeat=20),
+                        timeout=self.config.reconnect_connect_timeout,
+                    )
+                    self._handshake_websocket = candidate
+                    async with self._state_lock:
+                        if self._state is not SessionState.RECONNECTING:
+                            keep_candidate = False
+                        else:
+                            keep_candidate = True
+                            self._websocket = candidate
+                            self._handshake_websocket = None
+                            self._state = SessionState.CONNECTED
+                            self.result.reconnects += 1
+                            self._transport_ready.set()
+                    if keep_candidate:
+                        return True
+                except asyncio.CancelledError:
+                    if candidate is not None and not candidate.closed:
+                        self._force_close_websocket(candidate)
+                    raise
+                except Exception:
+                    self.result.reconnect_failures += 1
+                finally:
+                    if candidate is not None and self._handshake_websocket is candidate:
+                        self._handshake_websocket = None
+                if candidate is not None and not candidate.closed:
+                    self._force_close_websocket(candidate)
+
+            async with self._state_lock:
+                if self._state is SessionState.RECONNECTING:
+                    self._state = SessionState.FAILED
+                self._transport_ready.set()
+            return False
+
+    async def _retire_reconnect_websocket(self, websocket: Any) -> None:
+        if getattr(websocket, "closed", True):
+            return
+        try:
+            await asyncio.wait_for(websocket.close(), timeout=1.0)
+        except asyncio.CancelledError:
+            self._force_close_websocket(websocket)
+            raise
+        except Exception:
+            self._force_close_websocket(websocket)
 
     async def receive_event(self) -> GladiaEvent:
         """Wait for the next structured protocol event."""
@@ -1188,6 +1317,8 @@ class GladiaLiveSession:
                 websockets.append(websocket)
         self._websocket = None
         self._handshake_websocket = None
+        self._websocket_url = None
+        self._transport_ready.set()
         for websocket in websockets:
             if websocket.closed:
                 continue
@@ -1293,34 +1424,34 @@ class GladiaLiveSession:
                 pass
 
     async def _receive_messages(self) -> None:
-        assert self._websocket is not None
-        websocket = self._websocket
         try:
-            async for message in websocket:
-                if message.type in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
-                    event = self.process_message(message.data)
-                    if isinstance(event, LifecycleEvent) and event.event_type == "end_session":
+            while True:
+                async with self._state_lock:
+                    websocket = self._websocket
+                    state = self._state
+                if websocket is None or state in {
+                    SessionState.STOPPED,
+                    SessionState.FAILED,
+                }:
+                    return
+                try:
+                    await self._receive_websocket(websocket)
+                    return
+                except GladiaCriticalEventOverflow:
+                    return
+                except GladiaTransportError as exc:
+                    if await self._reconnect_transport(websocket):
+                        continue
+                    self._mark_abnormal(str(exc))
+                    if isinstance(exc, _GladiaWebSocketClosed):
                         return
-                elif message.type == aiohttp.WSMsgType.ERROR:
-                    safe = redact_sensitive_text(
-                        str(websocket.exception()), self._api_key
-                    )
-                    error = GladiaTransportError(
-                        f"Gladia WebSocket error: {safe or 'unknown transport error'}"
-                    )
-                    self._mark_abnormal(str(error))
-                    raise error from None
-                elif message.type in (
-                    aiohttp.WSMsgType.CLOSE,
-                    aiohttp.WSMsgType.CLOSED,
-                    aiohttp.WSMsgType.CLOSING,
-                ):
-                    break
+                    raise exc from None
         except asyncio.CancelledError:
-            self._mark_abnormal("Gladia receiver was cancelled")
+            async with self._state_lock:
+                stopping = self._state in {SessionState.STOPPING, SessionState.STOPPED}
+            if not stopping:
+                self._mark_abnormal("Gladia receiver was cancelled")
             raise
-        except GladiaCriticalEventOverflow:
-            return
         except GladiaTransportError:
             raise
         except Exception as exc:
@@ -1332,15 +1463,50 @@ class GladiaLiveSession:
             raise error from None
         finally:
             if self.result.completion is CompletionState.PENDING:
-                self._mark_abnormal(
-                    f"Gladia WebSocket ended before end_session (close code {websocket.close_code})"
-                )
+                async with self._state_lock:
+                    terminal = self._state in {
+                        SessionState.STOPPING,
+                        SessionState.STOPPED,
+                        SessionState.FAILED,
+                    }
+                if terminal:
+                    self._mark_abnormal("Gladia receiver ended before end_session")
             async with self._state_lock:
                 if self.result.completion is CompletionState.NORMAL:
                     self._state = SessionState.STOPPED
                 elif self._state is SessionState.CONNECTED:
                     self._state = SessionState.FAILED
+                self._transport_ready.set()
             self._events.publish_eos()
+
+    async def _receive_websocket(self, websocket: Any) -> None:
+        async for message in websocket:
+            if message.type in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
+                event = self.process_message(message.data)
+                if (
+                    isinstance(event, LifecycleEvent)
+                    and event.event_type == "end_session"
+                ):
+                    return
+            elif message.type == aiohttp.WSMsgType.ERROR:
+                safe = redact_sensitive_text(
+                    str(websocket.exception()),
+                    self._api_key,
+                    self._websocket_url or "",
+                )
+                raise GladiaTransportError(
+                    f"Gladia WebSocket error: {safe or 'unknown transport error'}"
+                ) from None
+            elif message.type in (
+                aiohttp.WSMsgType.CLOSE,
+                aiohttp.WSMsgType.CLOSED,
+                aiohttp.WSMsgType.CLOSING,
+            ):
+                break
+        if self.result.completion is not CompletionState.NORMAL:
+            raise _GladiaWebSocketClosed(
+                "Gladia WebSocket ended before end_session"
+            ) from None
 
 
 async def transcribe_wave_live(
