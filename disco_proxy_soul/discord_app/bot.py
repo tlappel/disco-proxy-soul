@@ -66,7 +66,7 @@ def build_bot(app: CompanionApp) -> discord.Client:
 
     client = discord.Client(intents=intents)
     tree = app_commands.CommandTree(client)
-    voice_sessions = VoiceSessionManager(app.config)
+    voice_sessions = VoiceSessionManager(app.config, app=app)
     register_commands(tree, app, voice_sessions)
     companion = app.persona.companion_name
     partner = app.persona.partner_name

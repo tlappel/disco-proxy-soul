@@ -24,9 +24,11 @@ from disco_proxy_soul.discord_app.commands import register_commands
 from disco_proxy_soul.discord_app.bot import build_bot, configure_application_logging
 from disco_proxy_soul.discord_app import voice_session as voice_session_module
 from disco_proxy_soul.discord_app.voice_session import (
+    FinalTurnCoordinator,
     FRAME_SAMPLES,
     MONO_FRAME_BYTES,
     MonoRtpClock,
+    SpeechEvidenceTimeline,
     VoiceSession,
     VoiceSessionCounters,
     VoiceSessionError,
@@ -54,16 +56,28 @@ def stereo_frame(value: int = 1000) -> bytes:
     return array("h", [value, value] * FRAME_SAMPLES).tobytes()
 
 
-def transcript(text: str, *, final: bool) -> TranscriptUpdate:
+def mono_frame(value: int = 1000) -> bytes:
+    return array("h", [value] * FRAME_SAMPLES).tobytes()
+
+
+def transcript(
+    text: str,
+    *,
+    final: bool,
+    utterance_id: str = "utterance",
+    start: float = 0,
+    end: float = 1,
+    confidence: float = 0.9,
+) -> TranscriptUpdate:
     return TranscriptUpdate(
         session_id="session",
         created_at="now",
-        utterance_id="utterance",
+        utterance_id=utterance_id,
         text=text,
         is_final=final,
-        start=0,
-        end=1,
-        confidence=0.9,
+        start=start,
+        end=end,
+        confidence=confidence,
         channel=0,
         words=(),
         language="en",
@@ -84,6 +98,23 @@ class FakeTextChannel:
         if self.send_error is not None:
             raise self.send_error
         self.messages.append(content)
+
+
+class FakeCompanion:
+    def __init__(self, *, gate=None, reply="Naomi heard you.") -> None:
+        self.calls: list[tuple[str, str, str | None]] = []
+        self.history: list[tuple[str, str]] = []
+        self.gate = gate
+        self.entered = asyncio.Event() if gate is not None else None
+        self.reply = reply
+
+    async def respond(self, channel_id, user_text, *, interaction_mode=None):
+        self.calls.append((channel_id, user_text, interaction_mode))
+        if self.entered is not None:
+            self.entered.set()
+            await self.gate.wait()
+        self.history.extend((("user", user_text), ("assistant", self.reply)))
+        return self.reply
 
 
 class FakeGladia:
@@ -481,6 +512,7 @@ class VoiceConfigTests(unittest.TestCase):
                 "VOICE_QUEUE_SECONDS": "3.5",
                 "VOICE_GLADIA_STOP_SECONDS": "17.5",
                 "VOICE_MIN_SPEECH_MS": "200",
+                "VOICE_TURN_DEBOUNCE_SECONDS": "0.8",
             },
             clear=True,
         ):
@@ -491,6 +523,7 @@ class VoiceConfigTests(unittest.TestCase):
         self.assertEqual(loaded.voice_queue_seconds, 3.5)
         self.assertEqual(loaded.voice_gladia_stop_seconds, 17.5)
         self.assertEqual(loaded.voice_min_speech_ms, 200)
+        self.assertEqual(loaded.voice_turn_debounce_seconds, 0.8)
 
     def test_voice_config_ranges_are_validated_without_echoing_values(self) -> None:
         with patch.dict(
@@ -650,6 +683,214 @@ class RtpClockTests(unittest.TestCase):
         self.assertEqual(counters.playout_reanchors, reanchors)
 
 
+class SpeechEvidenceTests(unittest.TestCase):
+    def test_low_energy_artifact_is_rejected_but_short_speech_is_preserved(self) -> None:
+        evidence = SpeechEvidenceTimeline()
+        for _ in range(10):
+            evidence.observe_sent_frame(mono_frame(0))
+        artifact = transcript("Thank you.", final=True, start=0, end=0.2)
+        self.assertFalse(evidence.corroborates(artifact, min_speech_ms=120))
+
+        start = evidence.duration
+        for _ in range(6):
+            evidence.observe_sent_frame(mono_frame(1000))
+        concise = transcript("Yes.", final=True, start=start, end=evidence.duration)
+        self.assertTrue(evidence.corroborates(concise, min_speech_ms=120))
+
+    def test_loud_high_frequency_artifact_is_not_speech_evidence(self) -> None:
+        evidence = SpeechEvidenceTimeline()
+        artifact_frame = array(
+            "h", (1000 if index % 2 == 0 else -1000 for index in range(FRAME_SAMPLES))
+        ).tobytes()
+        for _ in range(10):
+            evidence.observe_sent_frame(artifact_frame)
+        artifact = transcript(
+            "Cicada words", final=True, start=0, end=evidence.duration
+        )
+        self.assertFalse(evidence.corroborates(artifact, min_speech_ms=120))
+
+
+class FinalTurnCoordinatorTests(unittest.IsolatedAsyncioTestCase):
+    def make_evidence(self) -> tuple[SpeechEvidenceTimeline, float, float]:
+        evidence = SpeechEvidenceTimeline()
+        start = evidence.duration
+        for _ in range(40):
+            evidence.observe_sent_frame(mono_frame(1000))
+        return evidence, start, evidence.duration
+
+    async def test_split_finals_assemble_into_one_natural_turn(self) -> None:
+        evidence, start, end = self.make_evidence()
+        turns = []
+
+        async def accept(text):
+            turns.append(text)
+
+        coordinator = FinalTurnCoordinator(
+            evidence, accept, min_speech_ms=120, debounce_seconds=0.01
+        )
+        await coordinator.offer(
+            transcript(
+                "This is the repaired live voice",
+                final=True,
+                utterance_id="one",
+                start=start,
+                end=start + 0.4,
+            )
+        )
+        await coordinator.offer(
+            transcript(
+                "connection.",
+                final=True,
+                utterance_id="two",
+                start=start + 0.42,
+                end=end,
+            )
+        )
+        async with asyncio.timeout(0.5):
+            while not turns:
+                await asyncio.sleep(0)
+        self.assertEqual(turns, ["This is the repaired live voice connection."])
+        await coordinator.close()
+
+    async def test_late_second_final_still_joins_before_debounce(self) -> None:
+        evidence, start, end = self.make_evidence()
+        turns = []
+
+        async def accept(text):
+            turns.append(text)
+
+        coordinator = FinalTurnCoordinator(
+            evidence, accept, min_speech_ms=120, debounce_seconds=0.05
+        )
+        await coordinator.offer(
+            transcript(
+                "This is the repaired live voice",
+                final=True,
+                utterance_id="late-one",
+                start=start,
+                end=start + 0.4,
+            )
+        )
+        await asyncio.sleep(0.03)
+        self.assertEqual(turns, [])
+        await coordinator.offer(
+            transcript(
+                "connection.",
+                final=True,
+                utterance_id="late-two",
+                start=start + 0.42,
+                end=end,
+            )
+        )
+        async with asyncio.timeout(0.5):
+            while not turns:
+                await asyncio.sleep(0)
+        self.assertEqual(turns, ["This is the repaired live voice connection."])
+        await coordinator.close()
+
+    async def test_rtp_distorted_timestamps_do_not_override_arrival_debounce(self) -> None:
+        evidence = SpeechEvidenceTimeline()
+        for _ in range(150):
+            evidence.observe_sent_frame(mono_frame(1000))
+        turns = []
+
+        async def accept(text):
+            turns.append(text)
+
+        coordinator = FinalTurnCoordinator(
+            evidence, accept, min_speech_ms=120, debounce_seconds=0.01
+        )
+        await coordinator.offer(
+            transcript(
+                "This is the repaired live voice",
+                final=True,
+                utterance_id="rtp-one",
+                start=0.1,
+                end=0.5,
+            )
+        )
+        await coordinator.offer(
+            transcript(
+                "connection.",
+                final=True,
+                utterance_id="rtp-two",
+                start=2.2,
+                end=2.5,
+            )
+        )
+        async with asyncio.timeout(0.5):
+            while not turns:
+                await asyncio.sleep(0)
+        self.assertEqual(turns, ["This is the repaired live voice connection."])
+        await coordinator.close()
+
+    async def test_duplicate_and_concurrent_finals_dispatch_once(self) -> None:
+        evidence, start, end = self.make_evidence()
+        turns = []
+
+        async def accept(text):
+            turns.append(text)
+
+        coordinator = FinalTurnCoordinator(
+            evidence, accept, min_speech_ms=120, debounce_seconds=0.01
+        )
+        duplicate = transcript(
+            "Yes.", final=True, utterance_id="same", start=start, end=end
+        )
+        accepted = await asyncio.gather(
+            coordinator.offer(duplicate), coordinator.offer(duplicate)
+        )
+        async with asyncio.timeout(0.5):
+            while not turns:
+                await asyncio.sleep(0)
+        self.assertEqual(accepted.count(True), 1)
+        self.assertEqual(turns, ["Yes."])
+        await coordinator.close()
+
+    async def test_new_final_does_not_cancel_inflight_cognition(self) -> None:
+        evidence, start, end = self.make_evidence()
+        gate = asyncio.Event()
+        entered = asyncio.Event()
+        turns = []
+
+        async def accept(text):
+            turns.append(text)
+            if len(turns) == 1:
+                entered.set()
+                await gate.wait()
+
+        coordinator = FinalTurnCoordinator(
+            evidence, accept, min_speech_ms=120, debounce_seconds=0
+        )
+        await coordinator.offer(
+            transcript(
+                "First turn",
+                final=True,
+                utterance_id="first",
+                start=start,
+                end=start + 0.3,
+            )
+        )
+        await entered.wait()
+        await coordinator.offer(
+            transcript(
+                "Second turn",
+                final=True,
+                utterance_id="second",
+                start=start + 0.4,
+                end=end,
+            )
+        )
+        await asyncio.sleep(0)
+        self.assertEqual(turns, ["First turn"])
+        gate.set()
+        async with asyncio.timeout(0.5):
+            while len(turns) < 2:
+                await asyncio.sleep(0)
+        self.assertEqual(turns, ["First turn", "Second turn"])
+        await coordinator.close()
+
+
 class VoiceSessionAsyncTests(unittest.IsolatedAsyncioTestCase):
     def make_session(
         self,
@@ -657,7 +898,10 @@ class VoiceSessionAsyncTests(unittest.IsolatedAsyncioTestCase):
         gladia=None,
         channel=None,
         text_channel=None,
+        app=None,
+        session_config=None,
         pre_roll=0,
+        turn_debounce=0,
         shutdown_step=0.05,
     ):
         channel = channel or FakeVoiceChannel()
@@ -674,9 +918,11 @@ class VoiceSessionAsyncTests(unittest.IsolatedAsyncioTestCase):
             text_channel=text_channel or FakeTextChannel(),
             starter_user_id=7,
             starter_name="Travis",
-            config=config(),
+            config=session_config or config(),
+            app=app,
             gladia_factory=factory,
             pre_roll_seconds=pre_roll,
+            turn_debounce_seconds=turn_debounce,
             shutdown_step_seconds=shutdown_step,
         )
         return session, channel, gladia, factory_calls
@@ -747,19 +993,135 @@ class VoiceSessionAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(gladia.sent[0], bytes(MONO_FRAME_BYTES))
         await session.stop()
 
-    async def test_partials_only_log_and_final_is_posted_without_cognition(self) -> None:
-        session, _, gladia, _ = self.make_session()
+    async def test_partials_never_trigger_cognition_and_final_has_exactly_one_history_effect(self) -> None:
+        app = FakeCompanion()
+        session, _, gladia, _ = self.make_session(app=app)
         await session.start()
+        start = session._speech_evidence.duration
+        for _ in range(10):
+            session._speech_evidence.observe_sent_frame(mono_frame(1000))
+        end = session._speech_evidence.duration
         await gladia.events.put(transcript("This is trash", final=False))
-        await gladia.events.put(transcript("This is Travis", final=True))
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
+        await gladia.events.put(
+            transcript("This is Travis", final=True, start=start, end=end)
+        )
+        await self.wait_for(lambda: len(app.calls) == 1)
         self.assertEqual(
             session.text_channel.messages,
-            ["**Travis (voice transcript):** This is Travis"],
+            [
+                "**Travis (voice transcript):** This is Travis",
+                "Naomi heard you.",
+            ],
         )
-        self.assertFalse(hasattr(session, "app"))
+        self.assertEqual(app.calls, [("22", "[Travis]: This is Travis", "voice")])
+        self.assertEqual(
+            app.history,
+            [
+                ("user", "[Travis]: This is Travis"),
+                ("assistant", "Naomi heard you."),
+            ],
+        )
         await session.stop()
+
+    async def test_artifact_and_duplicate_finals_do_not_reach_cognition(self) -> None:
+        app = FakeCompanion()
+        session, _, gladia, _ = self.make_session(app=app)
+        await session.start()
+        quiet_start = session._speech_evidence.duration
+        for _ in range(10):
+            session._speech_evidence.observe_sent_frame(mono_frame(0))
+        quiet_end = session._speech_evidence.duration
+        await gladia.events.put(
+            transcript(
+                "Thank you.",
+                final=True,
+                utterance_id="artifact",
+                start=quiet_start,
+                end=quiet_end,
+            )
+        )
+        speech_start = session._speech_evidence.duration
+        for _ in range(10):
+            session._speech_evidence.observe_sent_frame(mono_frame(1000))
+        speech_end = session._speech_evidence.duration
+        accepted = transcript(
+            "Yes.",
+            final=True,
+            utterance_id="real",
+            start=speech_start,
+            end=speech_end,
+        )
+        await gladia.events.put(accepted)
+        await gladia.events.put(accepted)
+        await self.wait_for(lambda: len(app.calls) == 1)
+        self.assertEqual(app.calls[0][1], "[Travis]: Yes.")
+        self.assertEqual(len(app.history), 2)
+        self.assertEqual(session.counters.rejected_finals, 2)
+        await session.stop()
+
+    async def test_split_finals_make_one_cognition_call_and_one_exchange(self) -> None:
+        app = FakeCompanion()
+        session, _, gladia, _ = self.make_session(
+            app=app, turn_debounce=0.01
+        )
+        await session.start()
+        start = session._speech_evidence.duration
+        for _ in range(30):
+            session._speech_evidence.observe_sent_frame(mono_frame(1000))
+        end = session._speech_evidence.duration
+        await gladia.events.put(
+            transcript(
+                "This is the repaired live voice",
+                final=True,
+                utterance_id="split-one",
+                start=start,
+                end=start + 0.3,
+            )
+        )
+        await gladia.events.put(
+            transcript(
+                "connection.",
+                final=True,
+                utterance_id="split-two",
+                start=start + 0.32,
+                end=end,
+            )
+        )
+        await self.wait_for(lambda: len(app.calls) == 1)
+        self.assertEqual(
+            app.calls[0][1],
+            "[Travis]: This is the repaired live voice connection.",
+        )
+        self.assertEqual(len(app.history), 2)
+        self.assertEqual(session.counters.accepted_turns, 1)
+        self.assertEqual(session.counters.companion_responses, 1)
+        await session.stop()
+
+    async def test_stop_cancels_inflight_cognition_without_history_effect(self) -> None:
+        gate = asyncio.Event()
+        app = FakeCompanion(gate=gate)
+        session, _, gladia, _ = self.make_session(app=app)
+        await session.start()
+        start = session._speech_evidence.duration
+        for _ in range(10):
+            session._speech_evidence.observe_sent_frame(mono_frame(1000))
+        await gladia.events.put(
+            transcript(
+                "Stop while thinking",
+                final=True,
+                start=start,
+                end=session._speech_evidence.duration,
+            )
+        )
+        await app.entered.wait()
+        status = await session.stop()
+        self.assertEqual(status.state, VoiceSessionState.STOPPED)
+        self.assertEqual(len(app.calls), 1)
+        self.assertEqual(app.history, [])
+        self.assertEqual(
+            session.text_channel.messages,
+            ["**Travis (voice transcript):** Stop while thinking"],
+        )
 
     async def test_gladia_start_failure_disconnects_receiver(self) -> None:
         channel = FakeVoiceChannel()

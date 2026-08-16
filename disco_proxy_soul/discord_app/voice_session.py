@@ -1,8 +1,8 @@
-"""Single-speaker Discord-to-Gladia live transcription lifecycle.
+"""Single-speaker Discord-to-Gladia live voice lifecycle.
 
-This module transports audio and stable transcript text only.  It deliberately
-does not call ``CompanionApp.respond()``, mutate history, save raw PCM, or own
-outbound speech.
+Discord audio remains transport-only here. Stable, locally corroborated finals
+are assembled into human turns and handed to ``CompanionApp.respond()``; that
+existing application path remains the sole owner of cognition and history.
 """
 
 from __future__ import annotations
@@ -10,12 +10,12 @@ from __future__ import annotations
 import asyncio
 from array import array
 from bisect import bisect_left
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from dataclasses import dataclass
 from enum import Enum
 import logging
 import math
-from typing import Any, Callable, Protocol
+from typing import Any, Awaitable, Callable, Protocol
 
 from discord.ext import voice_recv
 
@@ -102,6 +102,12 @@ DEFAULT_PRE_ROLL_SECONDS = 0.1
 DEFAULT_SHUTDOWN_STEP_SECONDS = 2.0
 DEFAULT_GLADIA_STOP_SECONDS = 15.0
 REPORT_QUEUE_LIMIT = 8
+VOICE_ENERGY_RMS_THRESHOLD = 250
+VOICE_LOW_BAND_RATIO_THRESHOLD = 0.5
+VOICE_MIN_FINAL_CONFIDENCE = 0.35
+VOICE_EVIDENCE_PADDING_SECONDS = 0.06
+VOICE_TURN_DEBOUNCE_SECONDS = 1.5
+VOICE_EVIDENCE_RETENTION_SECONDS = 60.0
 
 
 class VoiceSessionError(RuntimeError):
@@ -137,6 +143,9 @@ class VoiceSessionCounters:
     sender_late_ticks: int = 0
     partial_transcripts: int = 0
     final_transcripts: int = 0
+    accepted_turns: int = 0
+    rejected_finals: int = 0
+    companion_responses: int = 0
     report_drops: int = 0
 
 
@@ -386,6 +395,235 @@ class _TextChannel(Protocol):
     async def send(self, content: str) -> Any: ...
 
 
+class _Companion(Protocol):
+    async def respond(
+        self,
+        channel_id: str,
+        user_text: str,
+        *,
+        interaction_mode: str | None = None,
+    ) -> str: ...
+
+
+@dataclass(frozen=True)
+class _SpeechEvidenceFrame:
+    start: float
+    end: float
+    voiced: bool
+
+
+class SpeechEvidenceTimeline:
+    """Bounded local energy evidence aligned to bytes actually sent to Gladia."""
+
+    def __init__(
+        self,
+        *,
+        rms_threshold: int = VOICE_ENERGY_RMS_THRESHOLD,
+        low_band_ratio_threshold: float = VOICE_LOW_BAND_RATIO_THRESHOLD,
+        retention_seconds: float = VOICE_EVIDENCE_RETENTION_SECONDS,
+    ) -> None:
+        self._rms_threshold = max(0, int(rms_threshold))
+        self._low_band_ratio_threshold = max(
+            0.0, min(1.0, float(low_band_ratio_threshold))
+        )
+        self._retention_seconds = max(FRAME_SECONDS, float(retention_seconds))
+        self._frames: deque[_SpeechEvidenceFrame] = deque()
+        self._next_start = 0.0
+
+    @property
+    def duration(self) -> float:
+        return self._next_start
+
+    def observe_sent_frame(self, pcm: bytes) -> None:
+        if len(pcm) != MONO_FRAME_BYTES:
+            raise ValueError("Speech evidence requires one 20 ms mono PCM16 frame")
+        samples = array("h")
+        samples.frombytes(pcm)
+        mean_square = sum(int(sample) * int(sample) for sample in samples) / len(samples)
+        rms = math.sqrt(mean_square)
+        # A four-sample moving average is a cheap low-pass proxy. Human voice
+        # carries sustained low/mid-band energy; high-frequency insects/static
+        # can be loud while collapsing under this filter. We still require
+        # multiple corroborated frames, so brief consonants remain harmless.
+        smoothed_square = 0.0
+        smoothed_count = max(0, len(samples) - 3)
+        if smoothed_count:
+            for index in range(smoothed_count):
+                value = sum(int(samples[index + offset]) for offset in range(4)) / 4
+                smoothed_square += value * value
+        low_band_rms = math.sqrt(smoothed_square / smoothed_count) if smoothed_count else 0.0
+        low_band_ratio = low_band_rms / rms if rms else 0.0
+        start = self._next_start
+        end = start + FRAME_SECONDS
+        self._frames.append(
+            _SpeechEvidenceFrame(
+                start=start,
+                end=end,
+                voiced=(
+                    rms >= self._rms_threshold
+                    and low_band_ratio >= self._low_band_ratio_threshold
+                ),
+            )
+        )
+        self._next_start = end
+        cutoff = end - self._retention_seconds
+        while self._frames and self._frames[0].end <= cutoff:
+            self._frames.popleft()
+
+    def voiced_seconds(self, start: float, end: float) -> float:
+        if end <= start:
+            return 0.0
+        voiced = 0.0
+        for frame in self._frames:
+            if frame.end <= start:
+                continue
+            if frame.start >= end:
+                break
+            if frame.voiced:
+                voiced += max(0.0, min(end, frame.end) - max(start, frame.start))
+        return voiced
+
+    def corroborates(self, event: TranscriptUpdate, *, min_speech_ms: int) -> bool:
+        start = max(0.0, float(event.start) - VOICE_EVIDENCE_PADDING_SECONDS)
+        end = max(start, float(event.end) + VOICE_EVIDENCE_PADDING_SECONDS)
+        required = max(FRAME_SECONDS, max(0, min_speech_ms) / 1000.0)
+        return self.voiced_seconds(start, end) + 1e-9 >= required
+
+
+TurnCallback = Callable[[str], Awaitable[None]]
+
+
+class FinalTurnCoordinator:
+    """Gate, deduplicate, debounce, and serialize stable transcript finals."""
+
+    def __init__(
+        self,
+        evidence: SpeechEvidenceTimeline,
+        on_turn: TurnCallback,
+        *,
+        min_speech_ms: int,
+        debounce_seconds: float = VOICE_TURN_DEBOUNCE_SECONDS,
+        min_confidence: float = VOICE_MIN_FINAL_CONFIDENCE,
+        seen_limit: int = 256,
+        ready_limit: int = 8,
+        task_name: str = "voice-turn",
+    ) -> None:
+        self._evidence = evidence
+        self._on_turn = on_turn
+        self._min_speech_ms = max(0, int(min_speech_ms))
+        self._debounce_seconds = max(0.0, float(debounce_seconds))
+        self._min_confidence = max(0.0, min(1.0, float(min_confidence)))
+        self._seen_limit = max(1, int(seen_limit))
+        self._ready_limit = max(1, int(ready_limit))
+        self._task_name = task_name
+        self._seen: OrderedDict[tuple[str, str], None] = OrderedDict()
+        self._pending: list[TranscriptUpdate] = []
+        self._ready: deque[str] = deque()
+        self._state_lock = asyncio.Lock()
+        self._debounce_task: asyncio.Task[None] | None = None
+        self._worker_task: asyncio.Task[None] | None = None
+        self._closed = False
+
+    @property
+    def tasks(self) -> tuple[asyncio.Task[None], ...]:
+        return tuple(
+            task
+            for task in (self._debounce_task, self._worker_task)
+            if task is not None
+        )
+
+    async def offer(self, event: TranscriptUpdate) -> bool:
+        if not event.is_final or not event.text.strip():
+            return False
+        async with self._state_lock:
+            if self._closed:
+                return False
+            identity = (event.session_id, event.utterance_id)
+            if identity in self._seen:
+                return False
+            self._seen[identity] = None
+            while len(self._seen) > self._seen_limit:
+                self._seen.popitem(last=False)
+            if event.confidence < self._min_confidence:
+                return False
+            if not self._evidence.corroborates(
+                event, min_speech_ms=self._min_speech_ms
+            ):
+                return False
+            self._pending.append(event)
+            self._reschedule_locked()
+        return True
+
+    def _reschedule_locked(self) -> None:
+        if self._debounce_task is not None and not self._debounce_task.done():
+            self._debounce_task.cancel()
+        self._debounce_task = asyncio.create_task(
+            self._debounce_then_queue(), name=f"{self._task_name}-debounce"
+        )
+
+    async def _debounce_then_queue(self) -> None:
+        try:
+            if self._debounce_seconds:
+                await asyncio.sleep(self._debounce_seconds)
+            async with self._state_lock:
+                if self._closed:
+                    return
+                turn = self._take_pending_locked()
+                if turn:
+                    self._queue_ready_locked(turn)
+        except asyncio.CancelledError:
+            raise
+
+    def _take_pending_locked(self) -> str | None:
+        if not self._pending:
+            return None
+        text = " ".join(event.text.strip() for event in self._pending if event.text.strip())
+        self._pending.clear()
+        return text or None
+
+    def _queue_ready_locked(self, turn: str) -> None:
+        if len(self._ready) >= self._ready_limit:
+            # Preserve text without allowing unbounded growth while cognition
+            # is slower than incoming speech. Adjacent queued turns are still
+            # serialized through one application response.
+            self._ready[-1] = f"{self._ready[-1]} {turn}"
+        else:
+            self._ready.append(turn)
+        if self._worker_task is None or self._worker_task.done():
+            self._worker_task = asyncio.create_task(
+                self._worker(), name=f"{self._task_name}-worker"
+            )
+
+    async def _worker(self) -> None:
+        while True:
+            async with self._state_lock:
+                if self._closed or not self._ready:
+                    return
+                turn = self._ready.popleft()
+            await self._on_turn(turn)
+
+    async def begin_close(self) -> tuple[asyncio.Task[None], ...]:
+        async with self._state_lock:
+            self._closed = True
+            self._pending.clear()
+            self._ready.clear()
+            tasks = self.tasks
+            self._debounce_task = None
+            self._worker_task = None
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            return tasks
+
+    async def close(self) -> None:
+        tasks = await self.begin_close()
+        for task in tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+
 GladiaFactory = Callable[..., GladiaLiveSession]
 TerminalCallback = Callable[["VoiceSession"], None]
 
@@ -402,8 +640,11 @@ class VoiceSession:
         starter_user_id: int,
         starter_name: str,
         config: RuntimeConfig,
+        app: _Companion | None = None,
+        conversation_lock: asyncio.Lock | None = None,
         gladia_factory: GladiaFactory = GladiaLiveSession,
         pre_roll_seconds: float = DEFAULT_PRE_ROLL_SECONDS,
+        turn_debounce_seconds: float | None = None,
         shutdown_step_seconds: float = DEFAULT_SHUTDOWN_STEP_SECONDS,
         on_terminal: TerminalCallback | None = None,
     ) -> None:
@@ -413,6 +654,9 @@ class VoiceSession:
         self.starter_user_id = int(starter_user_id)
         self.starter_name = starter_name
         self.config = config
+        self.app = app
+        self.conversation_key = str(voice_channel.id)
+        self._conversation_lock = conversation_lock or asyncio.Lock()
         self.queue_capacity = max(1, math.ceil(config.voice_queue_seconds / FRAME_SECONDS))
         self.queue: asyncio.Queue[LivePCMFrame] = asyncio.Queue(self.queue_capacity)
         self.counters = VoiceSessionCounters()
@@ -456,6 +700,24 @@ class VoiceSession:
         self._report_ready = asyncio.Event()
         self._report_stop = False
         self._starter_left_during_start = False
+        self._speech_evidence = SpeechEvidenceTimeline()
+        self._turns = FinalTurnCoordinator(
+            self._speech_evidence,
+            self._respond_to_turn,
+            min_speech_ms=config.voice_min_speech_ms,
+            debounce_seconds=(
+                float(turn_debounce_seconds)
+                if turn_debounce_seconds is not None
+                else float(
+                    getattr(
+                        config,
+                        "voice_turn_debounce_seconds",
+                        VOICE_TURN_DEBOUNCE_SECONDS,
+                    )
+                )
+            ),
+            task_name=f"voice-turn-g{self.guild_id}",
+        )
 
     def status(self) -> VoiceSessionStatus:
         if self.sink is not None:
@@ -738,7 +1000,9 @@ class VoiceSession:
                         clock.push(self.queue.get_nowait())
                     except asyncio.QueueEmpty:
                         break
-                await self.gladia.send_pcm(clock.render())
+                frame = clock.render()
+                await self.gladia.send_pcm(frame)
+                self._speech_evidence.observe_sent_frame(frame)
                 self.counters.sent_frames += 1
                 deadline += FRAME_SECONDS
                 now = loop.time()
@@ -770,9 +1034,8 @@ class VoiceSession:
                     if event.is_final:
                         self.counters.final_transcripts += 1
                         print(f"[voice:{self.guild_id}] [final] {self.starter_name}: {text}")
-                        await self.text_channel.send(
-                            f"**{self.starter_name} (voice transcript):** {text}"
-                        )
+                        if not await self._turns.offer(event):
+                            self.counters.rejected_finals += 1
                     else:
                         self.counters.partial_transcripts += 1
                         print(f"[voice:{self.guild_id}] [partial] {text}")
@@ -796,6 +1059,37 @@ class VoiceSession:
             self._trigger_failure(
                 "gladia_consumer",
                 self._safe_error(exc, prefix="Gladia event receiver stopped"),
+            )
+
+    async def _respond_to_turn(self, text: str) -> None:
+        if self.state is not VoiceSessionState.RUNNING:
+            return
+        try:
+            await self.text_channel.send(
+                f"**{self.starter_name} (voice transcript):** {text}"
+            )
+            self.counters.accepted_turns += 1
+            if self.app is None:
+                return
+            async with self._conversation_lock:
+                if self.state is not VoiceSessionState.RUNNING:
+                    return
+                reply = await self.app.respond(
+                    self.conversation_key,
+                    f"[{self.starter_name}]: {text}",
+                    interaction_mode="voice",
+                )
+                if self.state is not VoiceSessionState.RUNNING:
+                    return
+                for index in range(0, len(reply), 1900):
+                    await self.text_channel.send(reply[index:index + 1900])
+                self.counters.companion_responses += 1
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._trigger_failure(
+                "voice_cognition",
+                self._safe_error(exc, prefix="Live voice response failed"),
             )
 
     def _trigger_failure(self, key: str, message: str) -> None:
@@ -919,6 +1213,13 @@ class VoiceSession:
         sender_terminal = await self._cancel_task(self._sender_task, "audio sender")
         gladia_terminal = await self._finish_gladia()
         consumer_terminal = await self._finish_consumer()
+        turn_tasks = await self._turns.begin_close()
+        turn_terminal = all(
+            [
+                await self._cancel_task(task, "turn coordinator")
+                for task in turn_tasks
+            ]
+        )
         if preserve_borrowed:
             # Drop only our reference. The active borrowed receiver and its
             # Discord cache entry remain owned by the pre-existing subsystem.
@@ -933,6 +1234,7 @@ class VoiceSession:
                 sender_terminal,
                 gladia_terminal,
                 consumer_terminal,
+                turn_terminal,
                 disconnect_terminal,
             )
         )
@@ -1020,7 +1322,8 @@ class VoiceSession:
             "sent_frames=%s rtp_gap_samples=%s rtp_discontinuities=%s "
             "playout_reanchors=%s "
             "clock_dropped=%s pending_drops=%s late_samples=%s "
-            "partials=%s finals=%s",
+            "partials=%s finals=%s accepted_turns=%s rejected_finals=%s "
+            "responses=%s",
             status.guild_id,
             status.channel_id,
             status.starter_user_id,
@@ -1038,6 +1341,9 @@ class VoiceSession:
             counters.late_audio_samples,
             counters.partial_transcripts,
             counters.final_transcripts,
+            counters.accepted_turns,
+            counters.rejected_finals,
+            counters.companion_responses,
         )
 
     async def _disconnect_voice_client(self, voice_client: Any | None) -> bool:
@@ -1532,13 +1838,16 @@ class VoiceSessionManager:
         self,
         config: RuntimeConfig,
         *,
+        app: _Companion | None = None,
         gladia_factory: GladiaFactory = GladiaLiveSession,
         session_factory: Callable[..., VoiceSession] = VoiceSession,
     ) -> None:
         self.config = config
+        self._app = app
         self._gladia_factory = gladia_factory
         self._session_factory = session_factory
         self._sessions: dict[int, VoiceSession] = {}
+        self._conversation_locks: dict[str, asyncio.Lock] = {}
         self._diagnostics: dict[int, DiagnosticSession] = {}
         self._diagnostic_guilds: set[int] = set()
         self._starter_leave_tasks: dict[tuple[int, int], asyncio.Task[None]] = {}
@@ -1647,6 +1956,7 @@ class VoiceSessionManager:
             if self._sessions.get(guild_id) is session:
                 self._sessions.pop(guild_id, None)
 
+        conversation_key = str(voice_channel.id)
         session = self._session_factory(
             guild_id=guild_id,
             voice_channel=voice_channel,
@@ -1654,6 +1964,10 @@ class VoiceSessionManager:
             starter_user_id=int(starter.id),
             starter_name=str(getattr(starter, "display_name", None) or starter.name),
             config=self.config,
+            app=self._app,
+            conversation_lock=self._conversation_locks.setdefault(
+                conversation_key, asyncio.Lock()
+            ),
             gladia_factory=self._gladia_factory,
             on_terminal=terminal,
         )

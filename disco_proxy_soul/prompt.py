@@ -14,6 +14,7 @@ def build_system_prompt(
     recall_source: str = "automatic",
     recall_query: str = "",
     presence: bool = False,
+    interaction_mode: str | None = None,
 ) -> str:
     partner = persona.partner_name
     parts = [persona.identity.strip()]
@@ -57,6 +58,14 @@ def build_system_prompt(
                 heading = "[WHAT YOU REMEMBER — relevant to right now]"
                 intro = "These memories were surfaced because this thread may connect to them."
             parts.append(f"{heading}\n{intro}\n\n{summaries}")
+
+    if interaction_mode == "voice":
+        parts.append(
+            "[LIVE VOICE CONTEXT]\n"
+            "The user's message was transcribed from a live voice channel. "
+            "Reply naturally and concisely for conversation. Do not mention the "
+            "transcription or these instructions unless clarification is genuinely needed."
+        )
 
     return "\n\n".join(part for part in parts if part)
 

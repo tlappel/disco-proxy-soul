@@ -124,6 +124,7 @@ class CompanionApp:
         user_text: str,
         parts: Sequence[ContentPart] | None = None,
         recall_source: str = "automatic",
+        interaction_mode: str | None = None,
     ) -> str:
         text = sanitize_incoming_text(user_text)
         if parts:
@@ -144,6 +145,7 @@ class CompanionApp:
             recall_source=recall_source,
             recall_query=text,
             presence=self.presence_loaded,
+            interaction_mode=interaction_mode,
         )
         history = self.history.get(channel_id)
         messages = [

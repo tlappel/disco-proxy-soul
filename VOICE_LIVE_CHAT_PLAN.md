@@ -1,14 +1,23 @@
 # Live Voice Chat — implementation plan
 
-Status: feasibility proven on `feature/voice-live-chat`; implementation not yet
-connected to companion cognition or outbound speech.
+Status: Phases 1-3 implemented on `feature/voice-live-chat`; live text cognition
+accepted, outbound speech not yet implemented.
 
-## Current checkpoint — 2026-08-15
+## Current checkpoint — 2026-08-16
 
 Phases 1 and 2 are implemented and accepted in a private Discord channel.
 The bot receives the starter's DAVE-protected Discord audio, repairs the pinned
 receive fork's jitter-buffer loss amplification, streams paced mono PCM16 to
 Gladia, posts final transcripts, and shuts down without saving live raw audio.
+
+Phase 3 is implemented and live-tested. Stable finals are independently
+corroborated against the exact local PCM timeline sent to Gladia, nearby finals
+are assembled behind a quiet debounce, and accepted turns call the existing
+`CompanionApp.respond()` path exactly once. Naomi's canonical response is posted
+as Discord text and normal history/memory ownership remains inside the app.
+Phone/Wi-Fi testing confirmed clean transport with zero clock/queue drops on
+the final focused run. Deliberately pausing can still produce separate natural
+turns; that is acceptable unless normal speech causes unwanted double replies.
 
 Final live acceptance:
 
@@ -19,7 +28,7 @@ Final live acceptance:
 - Full unit suite: `158/158` passing.
 - Naomi was stopped after the test; no bot process was intentionally left running.
 
-Phase 3 is next. Do not reopen or replace the verified receive/transport
+Phase 4 is next. Do not reopen or replace the verified receive/transport
 lifecycle unless a new deterministic regression proves it necessary.
 
 ## Outcome

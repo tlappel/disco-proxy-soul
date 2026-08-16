@@ -20,6 +20,18 @@ class ConfigTests(unittest.TestCase):
 
 
 class PromptTests(unittest.TestCase):
+    def test_voice_interaction_context_is_optional_system_only_guidance(self) -> None:
+        root = Path("personas/example")
+        if not (root / "persona.md").exists():
+            self.skipTest("personas/example not present")
+        persona = load_persona(root)
+        with tempfile.TemporaryDirectory() as tmp:
+            facts = FactStore(Path(tmp) / "facts.json", persona.facts_seed)
+            normal = build_system_prompt(persona, facts)
+            voice = build_system_prompt(persona, facts, interaction_mode="voice")
+        self.assertNotIn("[LIVE VOICE CONTEXT]", normal)
+        self.assertIn("[LIVE VOICE CONTEXT]", voice)
+
     def test_prompt_includes_identity_facts_and_recall(self) -> None:
         root = Path("personas/example")
         if not (root / "persona.md").exists():

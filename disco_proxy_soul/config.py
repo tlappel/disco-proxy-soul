@@ -94,6 +94,7 @@ class RuntimeConfig:
     voice_queue_seconds: float
     voice_gladia_stop_seconds: float
     voice_min_speech_ms: int
+    voice_turn_debounce_seconds: float
 
     @classmethod
     def from_env(cls) -> "RuntimeConfig":
@@ -178,6 +179,13 @@ class RuntimeConfig:
                 120,
                 0,
                 10_000,
+            ),
+            voice_turn_debounce_seconds=_bounded_float(
+                "VOICE_TURN_DEBOUNCE_SECONDS",
+                os.getenv("VOICE_TURN_DEBOUNCE_SECONDS"),
+                1.5,
+                0.1,
+                5.0,
             ),
         )
 
