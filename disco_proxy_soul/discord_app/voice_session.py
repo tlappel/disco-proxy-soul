@@ -152,6 +152,7 @@ class VoiceSessionCounters:
     rejected_finals: int = 0
     companion_responses: int = 0
     spoken_responses: int = 0
+    finals_queued_during_playback: int = 0
     report_drops: int = 0
 
 
@@ -168,6 +169,7 @@ class VoiceSessionStatus:
     counters: VoiceSessionCounters
     last_error: str | None
     gladia_completion: str
+    playback_active: bool
 
 
 @dataclass
@@ -710,6 +712,7 @@ class VoiceSession:
         self._playback = playback_factory(
             capacity_frames=max(1, math.ceil(playback_seconds / FRAME_SECONDS))
         )
+        self._playback_active = False
         self._pre_roll_seconds = max(0.0, pre_roll_seconds)
         self._shutdown_step_seconds = max(0.01, shutdown_step_seconds)
         self._gladia_stop_seconds = max(
@@ -775,6 +778,7 @@ class VoiceSession:
             counters=self.counters,
             last_error=self.last_error,
             gladia_completion=completion,
+            playback_active=self._playback_active,
         )
 
     def enqueue_from_loop(self, frame: LivePCMFrame) -> None:
@@ -1070,8 +1074,11 @@ class VoiceSession:
                     if event.is_final:
                         self.counters.final_transcripts += 1
                         print(f"[voice:{self.guild_id}] [final] {self.starter_name}: {text}")
-                        if not await self._turns.offer(event):
+                        accepted = await self._turns.offer(event)
+                        if not accepted:
                             self.counters.rejected_finals += 1
+                        elif self._playback_active:
+                            self.counters.finals_queued_during_playback += 1
                     else:
                         self.counters.partial_transcripts += 1
                         print(f"[voice:{self.guild_id}] [partial] {text}")
@@ -1125,10 +1132,14 @@ class VoiceSession:
                         raise VoiceSessionError(
                             "Discord voice connection ended before outbound speech"
                         )
-                    await self._playback.play(
-                        self.voice_client,
-                        self._tts.stream_pcm(reply),
-                    )
+                    self._playback_active = True
+                    try:
+                        await self._playback.play(
+                            self.voice_client,
+                            self._tts.stream_pcm(reply),
+                        )
+                    finally:
+                        self._playback_active = False
                     self.counters.spoken_responses += 1
         except asyncio.CancelledError:
             raise
@@ -1369,7 +1380,7 @@ class VoiceSession:
             "playout_reanchors=%s "
             "clock_dropped=%s pending_drops=%s late_samples=%s "
             "partials=%s finals=%s accepted_turns=%s rejected_finals=%s "
-            "responses=%s spoken=%s",
+            "responses=%s spoken=%s queued_during_playback=%s",
             status.guild_id,
             status.channel_id,
             status.starter_user_id,
@@ -1391,6 +1402,7 @@ class VoiceSession:
             counters.rejected_finals,
             counters.companion_responses,
             counters.spoken_responses,
+            counters.finals_queued_during_playback,
         )
 
     async def _disconnect_voice_client(self, voice_client: Any | None) -> bool:

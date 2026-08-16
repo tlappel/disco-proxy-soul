@@ -137,6 +137,29 @@ class FakePlayback:
         self.calls.append((voice_client, [chunk async for chunk in chunks]))
 
 
+class BlockingPlayback(FakePlayback):
+    def __init__(self, *, capacity_frames=100) -> None:
+        super().__init__(capacity_frames=capacity_frames)
+        self.release = asyncio.Event()
+        self.entered = asyncio.Event()
+        self.cancelled = 0
+        self.active = 0
+        self.max_active = 0
+
+    async def play(self, voice_client, chunks):
+        self.calls.append((voice_client, [chunk async for chunk in chunks]))
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        self.entered.set()
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            self.cancelled += 1
+            raise
+        finally:
+            self.active -= 1
+
+
 class FakeGladia:
     def __init__(
         self,
@@ -1195,6 +1218,119 @@ class VoiceSessionAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.counters.companion_responses, 1)
         self.assertEqual(session.counters.spoken_responses, 1)
         await session.stop()
+
+    async def test_turn_during_playback_waits_without_overlapping_response(self) -> None:
+        app = FakeCompanion(reply="One reply at a time.")
+        playback = BlockingPlayback()
+        tts_config = config(
+            voice_tts_enabled=True,
+            elevenlabs_api_key="tts-key",
+            elevenlabs_voice_id="voice-id",
+        )
+        session, _, gladia, _ = self.make_session(
+            app=app,
+            playback=playback,
+            session_config=tts_config,
+        )
+        await session.start()
+
+        first_start = session._speech_evidence.duration
+        for _ in range(10):
+            session._speech_evidence.observe_sent_frame(mono_frame(1000))
+        await gladia.events.put(
+            transcript(
+                "First turn",
+                final=True,
+                utterance_id="half-duplex-one",
+                start=first_start,
+                end=session._speech_evidence.duration,
+            )
+        )
+        await playback.entered.wait()
+        self.assertTrue(session.status().playback_active)
+
+        second_start = session._speech_evidence.duration
+        for _ in range(10):
+            session._speech_evidence.observe_sent_frame(mono_frame(1000))
+        await gladia.events.put(
+            transcript(
+                "Second turn",
+                final=True,
+                utterance_id="half-duplex-two",
+                start=second_start,
+                end=session._speech_evidence.duration,
+            )
+        )
+        await self.wait_for(
+            lambda: session.counters.finals_queued_during_playback == 1
+        )
+        self.assertEqual(len(app.calls), 1)
+        self.assertEqual(playback.max_active, 1)
+
+        playback.release.set()
+        await self.wait_for(lambda: len(app.calls) == 2)
+        await self.wait_for(lambda: session.counters.spoken_responses == 2)
+        self.assertEqual(playback.max_active, 1)
+        self.assertFalse(session.status().playback_active)
+        self.assertEqual(
+            [call[1] for call in app.calls],
+            ["[Travis]: First turn", "[Travis]: Second turn"],
+        )
+        self.assertEqual(len(app.history), 4)
+        await session.stop()
+
+    async def test_stop_cancels_playback_and_discards_queued_turn(self) -> None:
+        app = FakeCompanion(reply="Current reply.")
+        playback = BlockingPlayback()
+        tts_config = config(
+            voice_tts_enabled=True,
+            elevenlabs_api_key="tts-key",
+            elevenlabs_voice_id="voice-id",
+        )
+        session, _, gladia, _ = self.make_session(
+            app=app,
+            playback=playback,
+            session_config=tts_config,
+        )
+        await session.start()
+
+        first_start = session._speech_evidence.duration
+        for _ in range(10):
+            session._speech_evidence.observe_sent_frame(mono_frame(1000))
+        await gladia.events.put(
+            transcript(
+                "Playing now",
+                final=True,
+                utterance_id="stop-playback-one",
+                start=first_start,
+                end=session._speech_evidence.duration,
+            )
+        )
+        await playback.entered.wait()
+
+        queued_start = session._speech_evidence.duration
+        for _ in range(10):
+            session._speech_evidence.observe_sent_frame(mono_frame(1000))
+        await gladia.events.put(
+            transcript(
+                "Do not dispatch",
+                final=True,
+                utterance_id="stop-playback-two",
+                start=queued_start,
+                end=session._speech_evidence.duration,
+            )
+        )
+        await self.wait_for(
+            lambda: session.counters.finals_queued_during_playback == 1
+        )
+
+        status = await session.stop()
+        self.assertEqual(status.state, VoiceSessionState.STOPPED)
+        self.assertFalse(status.playback_active)
+        self.assertEqual(playback.cancelled, 1)
+        self.assertEqual(len(app.calls), 1)
+        self.assertEqual(len(app.history), 2)
+        self.assertEqual(session.counters.spoken_responses, 0)
 
     async def test_stop_cancels_inflight_cognition_without_history_effect(self) -> None:
         gate = asyncio.Event()
