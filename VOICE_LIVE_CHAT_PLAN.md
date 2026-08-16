@@ -438,6 +438,42 @@ is known:
 Do not silently degrade to mixed audio or lose speaker identity. Consent,
 participant joins/leaves, simultaneous turns, and cost must be explicit.
 
+## Future project — standalone voice sidecar
+
+Build a separate, persona-neutral Discord voice bridge that can lend ears and
+a configured voice to a companion bot whose code and cognition cannot be
+modified. This is a future standalone project, not an expansion of Naomi's
+Phase 5 or Phase 6 scope.
+
+The reusable voice core would continue to own Discord receive, Gladia live
+transcription, independent speech evidence, natural-turn assembly, ElevenLabs
+streaming, playback, cancellation, and half-duplex/echo policy. A narrow
+cognition adapter would decide where an accepted turn goes:
+
+- **Direct adapter:** call an editable companion's existing cognition entry
+  point, as this project calls `CompanionApp.respond()`.
+- **Discord relay adapter:** post the accepted turn into a configured text
+  channel, correlate the response from one configured target bot ID, and speak
+  that bot's response through its configured ElevenLabs voice ID.
+
+The first feasibility gate is deliberately small: use a probe bot or webhook
+to mention the opaque target companion and confirm that it responds to a
+bot- or webhook-authored message. Many bots intentionally ignore automated
+authors. If the target exposes no supported bot/API input and ignores relay
+messages, the inbound half cannot be automated without an unsupported user
+account self-bot; do not build that workaround. Outbound target-bot text to
+voice can still operate independently when message content is available.
+
+If the probe succeeds, define configuration for target bot, text channel,
+voice channel, input adapter, and voice ID. Correlate replies rather than
+speaking every target-bot message, filter by stable Discord IDs instead of
+display names, prevent relay loops, and publish the same consent/privacy
+notice used by the underlying processors.
+
+Do not extract a generic library prematurely. Finish and measure Phase 5A's
+half-duplex ownership here first, then move only transport boundaries that have
+proven reusable with both an editable persona and the opaque external bot.
+
 ## Final verification
 
 - Run the complete unit suite and syntax/import checks.
