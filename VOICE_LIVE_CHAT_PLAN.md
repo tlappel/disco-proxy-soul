@@ -394,6 +394,30 @@ Add `Speak` to documented Discord permissions and add:
 
 ## Phase 5 — interruption, resilience, and long-session behavior
 
+### Phase 5A checkpoint — accepted 2026-08-16
+
+Half-duplex ownership is implemented without adding barge-in. The existing
+serialized turn worker owns cognition, Discord text, TTS, and playback as one
+ordered response, so an accepted turn cannot begin a second response while
+Naomi is still speaking. Stop cancels active playback and discards queued work
+without adding a second history exchange.
+
+Playback activity is explicit in session status. Completed playback windows
+are retained on the exact local audio clock sent to Gladia, allowing delayed
+finals to be correlated with when the human actually spoke rather than when
+the provider delivered the final transcript.
+
+Live acceptance produced five natural accepted turns, five text responses,
+and five spoken responses during a continued conversation. One final's source
+audio overlapped Naomi's playback; Naomi finished her current response, then
+processed the preserved turn without overlapping her own speech. Receive and
+event-loop queue drops were zero, late samples were zero, and the complete
+automated suite passed `199/199`.
+
+Phase 5B is next: measure echo and add explicit barge-in. Do not reinterpret
+Phase 5A's queued turn behavior as interruption; Naomi is intentionally not
+stopped by speech during this checkpoint.
+
 ### Implement
 
 - Begin half-duplex: queue incoming accepted human turns while Naomi speaks.
