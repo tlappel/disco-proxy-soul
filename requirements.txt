@@ -1,10 +1,13 @@
-# Standalone v2 host. No voice-channel extras (those are parked).
-discord.py>=2.4
+# Voice receive currently needs discord.py's DAVE session plus the minimal
+# inbound-decryption patch from discord-ext-voice-recv PR #58. The exact pin is
+# shape-guarded by discord_app/voice_compat.py for jitter readiness, waiter
+# uniqueness, non-flushing gap handling, and Opus decoder reset. Change/remove
+# that local patch only after the pinned upstream version supplies all four
+# behaviors and the installed-object compatibility tests pass unchanged.
+discord.py[voice]>=2.7.1,<2.8
+discord-ext-voice-recv @ git+https://github.com/porgeeratad/discord-ext-voice-recv.git@03dd1e2dafe85522cc458441cd5b143b136ac836
 python-dotenv
 aiohttp
 openai
 anthropic
 tzdata
-asyncio
-websockets
-json

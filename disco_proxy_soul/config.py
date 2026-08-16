@@ -13,6 +13,38 @@ def _as_bool(value: str | None, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _bounded_float(
+    name: str,
+    raw: str | None,
+    default: float,
+    low: float,
+    high: float,
+) -> float:
+    try:
+        value = float(raw) if raw not in (None, "") else default
+    except ValueError:
+        raise ValueError(f"{name} must be a number") from None
+    if not low <= value <= high:
+        raise ValueError(f"{name} must be between {low:g} and {high:g}")
+    return value
+
+
+def _bounded_int(
+    name: str,
+    raw: str | None,
+    default: int,
+    low: int,
+    high: int,
+) -> int:
+    try:
+        value = int(raw) if raw not in (None, "") else default
+    except ValueError:
+        raise ValueError(f"{name} must be a whole number") from None
+    if not low <= value <= high:
+        raise ValueError(f"{name} must be between {low} and {high}")
+    return value
+
+
 def parse_model_ref(raw: str, default_provider: str) -> tuple[str, str]:
     """Split 'provider:model' or bare 'model' into (provider, model)."""
     text = (raw or "").strip()
@@ -56,6 +88,12 @@ class RuntimeConfig:
     reach_sleep_cooldown_h: float
     reach_quiet_start: int
     reach_quiet_end: int
+    gladia_api_key: str
+    voice_enabled: bool
+    voice_endpointing_seconds: float
+    voice_queue_seconds: float
+    voice_gladia_stop_seconds: float
+    voice_min_speech_ms: int
 
     @classmethod
     def from_env(cls) -> "RuntimeConfig":
@@ -111,6 +149,36 @@ class RuntimeConfig:
             reach_sleep_cooldown_h=float(os.getenv("REACH_SLEEP_COOLDOWN_HOURS", "2")),
             reach_quiet_start=int(os.getenv("REACH_QUIET_START", "22")),
             reach_quiet_end=int(os.getenv("REACH_QUIET_END", "5")),
+            gladia_api_key=os.getenv("GLADIA_API_KEY", "").strip(),
+            voice_enabled=_as_bool(os.getenv("VOICE_ENABLED"), False),
+            voice_endpointing_seconds=_bounded_float(
+                "VOICE_ENDPOINTING_SECONDS",
+                os.getenv("VOICE_ENDPOINTING_SECONDS"),
+                0.1,
+                0.05,
+                10.0,
+            ),
+            voice_queue_seconds=_bounded_float(
+                "VOICE_QUEUE_SECONDS",
+                os.getenv("VOICE_QUEUE_SECONDS"),
+                2.0,
+                0.2,
+                30.0,
+            ),
+            voice_gladia_stop_seconds=_bounded_float(
+                "VOICE_GLADIA_STOP_SECONDS",
+                os.getenv("VOICE_GLADIA_STOP_SECONDS"),
+                15.0,
+                1.0,
+                120.0,
+            ),
+            voice_min_speech_ms=_bounded_int(
+                "VOICE_MIN_SPEECH_MS",
+                os.getenv("VOICE_MIN_SPEECH_MS"),
+                120,
+                0,
+                10_000,
+            ),
         )
 
     def require_discord(self) -> None:

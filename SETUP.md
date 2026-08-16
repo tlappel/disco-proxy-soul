@@ -61,7 +61,7 @@ Do not leave it in Downloads. You will come back to this folder.
 1. Left menu → **OAuth2** → **URL Generator**
 2. Scopes: tick `bot` and `applications.commands`
 3. Bot Permissions: tick **View Channels**, **Send Messages**, **Attach Files**,
-   **Read Message History**, **Add Reactions**
+   **Read Message History**, **Add Reactions**, and **Connect**
 4. Copy the URL at the bottom, paste it into your browser, pick your server,
    click Authorize.
 
@@ -106,6 +106,22 @@ Leave `PERSONA_ID=example` and `PERSONA_DIR=personas/example` for the first
 run. You will change those when you add your own persona (step 10).
 
 Save and close.
+
+To enable the experimental single-speaker live transcription commands, also
+create a Gladia API key and set:
+
+```env
+GLADIA_API_KEY=paste-the-gladia-key
+VOICE_ENABLED=true
+VOICE_ENDPOINTING_SECONDS=0.1
+VOICE_QUEUE_SECONDS=2.0
+VOICE_GLADIA_STOP_SECONDS=15.0
+VOICE_MIN_SPEECH_MS=120
+```
+
+The key is used server-side and must remain in the private `.env` file.
+The Gladia stop deadline allows final transcripts to drain during shutdown.
+The session also stops automatically if its starter leaves or changes voice channels.
 
 ## Step 8 — Make it *them* (optional, first run can skip)
 
@@ -164,6 +180,54 @@ client restart before slash commands appear.
 
 Do not run this twice at once with the same bot token. They will answer
 everything twice.
+
+### Optional — test live voice transcription
+
+The bot needs **Connect** permission for the private voice channel, plus **View
+Channels**, **Send Messages**, and **Read Message History** in the text channel
+where transcripts should appear. **Speak** is not needed yet.
+
+1. Add `GLADIA_API_KEY` and `VOICE_ENABLED=true` to the private `.env` file.
+2. Restart the bot, then join a private voice channel.
+3. Run `/voice-chat start`. A public notice explains that only the starter's
+   audio is sent to Gladia. No raw audio is saved.
+4. Speak normally. Partial guesses stay in the bot terminal; stable final
+   transcripts appear in the command channel. They do not reach companion
+   cognition or history in this phase.
+5. Run `/voice-chat status` to inspect queue drops and timing, then
+   `/voice-chat stop` to close the session and disconnect.
+
+Only the command starter is transcribed. Diagnostic recording and live
+transcription cannot run together.
+
+### Optional — make a diagnostic recording
+
+The `feature/voice-live-chat` branch can record decoded Discord audio before
+any speech-to-text or AI response is connected.
+
+1. Re-run `pip install -r requirements.txt` after switching to this branch.
+2. Join a server voice channel.
+3. Run `/voice-record`. The bot announces publicly that recording has begun.
+4. Say: "Atlas voice test. Travis and Lila, one two three. Peter picked a
+   purple packet. Pause. This is the final sentence."
+5. Run `/voice-stop`.
+6. Open the reported folder under `data\voice-captures` and play your WAV.
+
+Listen for normal speed and pitch, intelligible words, clean pauses, and no
+static, robotic doubling, clicks, or missing syllables. Each human speaker
+gets a separate WAV. The files remain on this computer and `data` is ignored
+by Git.
+
+To test the recording with Gladia Live V2, add `GLADIA_API_KEY` to your private
+environment file and run:
+
+```powershell
+python -m disco_proxy_soul.adapters.gladia_live "data\voice-captures\<capture>\<speaker>.wav" --env-file ".env"
+```
+
+This sends that speaker's recording to Gladia, so obtain their permission
+first. The replay runs at real-time speed, prints partial and final transcripts,
+and automatically converts Discord's duplicated stereo audio to mono.
 
 ---
 

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 from collections import defaultdict
 
 import aiohttp
@@ -11,10 +13,46 @@ from discord import app_commands
 from dotenv import load_dotenv
 
 from ..app import CompanionApp
+from ..adapters.gladia_live import redact_sensitive_text
 from ..config import RuntimeConfig
 from ..safety import sanitize_outgoing
 from .attachments import build_user_parts
 from .commands import register_commands
+from .voice_session import VoiceSessionManager
+
+
+APPLICATION_LOGGER_NAME = "disco_proxy_soul"
+
+
+class _RedactingApplicationFormatter(logging.Formatter):
+    def __init__(self, api_key: str) -> None:
+        super().__init__("%(levelname)s %(name)s: %(message)s")
+        self._api_key = api_key
+
+    def format(self, record: logging.LogRecord) -> str:
+        return redact_sensitive_text(super().format(record), self._api_key)
+
+
+def configure_application_logging(
+    api_key: str = "", *, stream: object | None = None
+) -> logging.Logger:
+    """Expose this app's INFO diagnostics without changing Discord logging."""
+
+    app_logger = logging.getLogger(APPLICATION_LOGGER_NAME)
+    app_logger.setLevel(logging.INFO)
+    app_logger.propagate = False
+    formatter = _RedactingApplicationFormatter(api_key)
+    for handler in app_logger.handlers:
+        if getattr(handler, "_dps_application_handler", False):
+            handler.setLevel(logging.INFO)
+            handler.setFormatter(formatter)
+            return app_logger
+    handler = logging.StreamHandler(stream)  # type: ignore[arg-type]
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(formatter)
+    handler._dps_application_handler = True  # type: ignore[attr-defined]
+    app_logger.addHandler(handler)
+    return app_logger
 
 
 def _clean_mentions(content: str, user_id: int) -> str:
@@ -28,7 +66,8 @@ def build_bot(app: CompanionApp) -> discord.Client:
 
     client = discord.Client(intents=intents)
     tree = app_commands.CommandTree(client)
-    register_commands(tree, app)
+    voice_sessions = VoiceSessionManager(app.config)
+    register_commands(tree, app, voice_sessions)
     companion = app.persona.companion_name
     partner = app.persona.partner_name
     message_index: dict[str, dict[str, tuple[str, str]]] = defaultdict(dict)
@@ -101,45 +140,6 @@ def build_bot(app: CompanionApp) -> discord.Client:
         if sent:
             message_index[str(message.channel.id)][str(sent.id)] = (store_text, reply)
 
-    # 1. Add this method to your main bot class alongside on_message
-    async def handle_voice_input(self, guild: discord.Guild, user_id: int, text: str):
-        """Bridges the Gladia voice transcription into the existing AI respond logic."""
-        vc = guild.voice_client
-        if not vc or not vc.is_connected():
-            return
-
-        # Look up who is speaking to log or format their text
-        member = guild.get_member(user_id)
-        display_name = member.display_name if member else f"User {user_id}"
-        
-        # Format the input display text (similar to how on_message does it)
-        display_text = f"[{display_name}]: {text}"
-        print(f"[VOICE CHAT] {display_name}: {text}")
-
-        try:
-            # Use the voice channel ID as the session key so memory isolates per voice room
-            channel_id_str = str(vc.channel.id)
-            
-            # Call your existing respond method natively!
-            # It handles history, system prompts, and returns a clean text string.
-            reply = await self.respond(channel_id_str, display_text, parts=[])
-            print(f"[AI Voice Reply]: {reply}")
-
-            # Pass the AI text output to your TTS player
-            await self.speak_in_voice_channel(vc, reply)
-
-        except Exception as e:
-            print(f"Error in voice companion pipeline: {e}")
-
-    # 2. Add your placeholder for Text-to-Speech playback
-    async def speak_in_voice_channel(self, vc, text: str):
-        """Converts the text response to audio and plays it in the voice channel."""
-        # TODO: Connect an engine like ElevenLabs, Edge-TTS, or Kokoro here.
-        # audio_source = await your_tts_engine.generate(text)
-        # vc.play(audio_source)
-        pass
-
-
     @client.event
     async def on_reaction_add(reaction: discord.Reaction, user: discord.User) -> None:
         if user == client.user:
@@ -179,7 +179,16 @@ def build_bot(app: CompanionApp) -> discord.Client:
         if sent:
             message_index[ckey][str(sent.id)] = (user_text, reply)
 
+    @client.event
+    async def on_voice_state_update(
+        member: discord.Member,
+        before: discord.VoiceState,
+        after: discord.VoiceState,
+    ) -> None:
+        voice_sessions.handle_voice_state_update(member, before, after)
+
     client.tree = tree  # type: ignore[attr-defined]
+    client.voice_sessions = voice_sessions  # type: ignore[attr-defined]
     return client
 
 
@@ -209,8 +218,15 @@ async def _outreach_loop(client: discord.Client, app: CompanionApp) -> None:
 
 
 def run() -> None:
-    load_dotenv()
+    env_file = os.getenv("ENV_FILE", "").strip()
+    if env_file:
+        if not load_dotenv(env_file):
+            raise SystemExit(f"ENV_FILE could not be loaded: {env_file}")
+        print(f"Runtime environment: {env_file}")
+    else:
+        load_dotenv()
     config = RuntimeConfig.from_env()
+    configure_application_logging(config.gladia_api_key)
     if not config.discord_token:
         raise SystemExit(
             "Missing DISCORD_TOKEN.\n"

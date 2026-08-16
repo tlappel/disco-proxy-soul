@@ -2,16 +2,123 @@
 
 from __future__ import annotations
 
-import asyncioS
+import asyncio
+
 import discord
 from discord import app_commands
-from disco_proxy_soul.adapters.gladia_pipe import GladiaStreamingSink
+
 from ..app import CompanionApp
+from .voice_session import VoiceSessionError, VoiceSessionManager, VoiceSessionStatus
 
 
-def register_commands(tree: app_commands.CommandTree, app: CompanionApp) -> None:
+def register_commands(
+    tree: app_commands.CommandTree,
+    app: CompanionApp,
+    voice_sessions: VoiceSessionManager,
+) -> None:
     companion = app.persona.companion_name
     partner = app.persona.partner_name
+    voice_chat = app_commands.Group(
+        name="voice-chat",
+        description="Control experimental single-speaker live transcription",
+    )
+    tree.add_command(voice_chat)
+
+    def live_status_text(status: VoiceSessionStatus) -> str:
+        counters = status.counters
+        return (
+            f"**Live Voice Status — {status.state.value}**\n"
+            f"Starter: **{status.starter_name}**\n"
+            f"Voice channel: <#{status.channel_id}>\n"
+            f"Audio queues: loop {status.queue_size}/{status.queue_capacity}, "
+            f"thread ring {status.ingress_pending}/{status.queue_capacity} packets\n"
+            f"Drops: thread {counters.ingress_drops}, loop {counters.queue_drops}, "
+            f"clock {counters.clock_dropped_packets}\n"
+            f"Gladia frames sent: {counters.sent_frames}; "
+            f"finals: {counters.final_transcripts}; "
+            f"partials: {counters.partial_transcripts}\n"
+            f"Inserted silence: {counters.inserted_silence_samples / 48_000:.2f}s; "
+            f"RTP gaps: {counters.rtp_gap_samples / 48_000:.2f}s\n"
+            f"RTP discontinuities: {counters.rtp_discontinuities}; "
+            f"playout reanchors: {counters.playout_reanchors}; "
+            f"late samples: {counters.late_audio_samples}\n"
+            f"Transport completion: {status.gladia_completion}\n"
+            f"Last warning: {status.last_error or 'none'}"
+        )
+
+    @voice_chat.command(name="start", description="Start live transcription for your voice")
+    async def slash_voice_chat_start(interaction: discord.Interaction) -> None:
+        guild = interaction.guild
+        voice_state = getattr(interaction.user, "voice", None)
+        if guild is None or voice_state is None or voice_state.channel is None:
+            await interaction.response.send_message(
+                "Join a server voice channel first.", ephemeral=True
+            )
+            return
+        if interaction.channel is None:
+            await interaction.response.send_message(
+                "Run this command from a server text channel.", ephemeral=True
+            )
+            return
+        try:
+            voice_sessions.validate_start(guild.id)
+        except VoiceSessionError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+
+        await interaction.response.defer(thinking=True)
+        await interaction.followup.send(
+            f"🔴 **Live voice transcription is starting for "
+            f"{interaction.user.display_name}.** Their voice audio is sent to "
+            "Gladia for transcription. Stable final transcripts will appear in "
+            "this channel; companion-history integration comes in a later phase. "
+            "Live mode saves no raw WAV or PCM audio. Use `/voice-chat stop` to end it."
+        )
+        try:
+            status = await voice_sessions.start(
+                guild=guild,
+                voice_channel=voice_state.channel,
+                text_channel=interaction.channel,
+                starter=interaction.user,
+            )
+        except VoiceSessionError as exc:
+            await interaction.followup.send(f"Live voice could not start: {exc}")
+            return
+        await interaction.followup.send(
+            f"Listening to **{status.starter_name}** in <#{status.channel_id}>. "
+            "Other speakers are ignored in this first slice."
+        )
+
+    @voice_chat.command(name="stop", description="Stop this server's live transcription")
+    async def slash_voice_chat_stop(interaction: discord.Interaction) -> None:
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message(
+                "This command only works in a server.", ephemeral=True
+            )
+            return
+        await interaction.response.defer(thinking=True)
+        status = await voice_sessions.stop(guild.id)
+        if status is None:
+            await interaction.followup.send(
+                "No live voice transcription session is running.", ephemeral=True
+            )
+            return
+        await interaction.followup.send(
+            "Live voice transcription stopped. No raw audio was saved.\n"
+            + live_status_text(status)
+        )
+
+    @voice_chat.command(name="status", description="Show live transcription health")
+    async def slash_voice_chat_status(interaction: discord.Interaction) -> None:
+        guild = interaction.guild
+        status = voice_sessions.status(guild.id) if guild is not None else None
+        if status is None:
+            await interaction.response.send_message(
+                "No live voice transcription session is running.", ephemeral=True
+            )
+            return
+        await interaction.response.send_message(live_status_text(status), ephemeral=True)
 
     @tree.command(name="status", description=f"Show {companion}'s memory status")
     async def slash_status(interaction: discord.Interaction) -> None:
@@ -323,7 +430,7 @@ def register_commands(tree: app_commands.CommandTree, app: CompanionApp) -> None
     async def slash_reach(interaction: discord.Interaction) -> None:
         gate = app.outreach.status()
         data = app.outreach.data
-        msg = (S
+        msg = (
             f"**Outreach Status**\n"
             f"Enabled: {app.outreach.enabled}\n"
             f"Gate status: {gate['status']} — {gate['reason']}\n"
@@ -350,29 +457,105 @@ def register_commands(tree: app_commands.CommandTree, app: CompanionApp) -> None
             "Outreach reset. Count is 0 and silence timer is clear.",
             ephemeral=True,
         )
-    @tree.command(name="start_voice", description="Start real-time AI voice listening")
-    async def start_voice(interaction: discord.Interaction):
-        if not interaction.user.voice:
-            return await interaction.response.send_message("Join a voice channel first!", ephemeral=True)
-        
-        channel = interaction.user.voice.channel
+    @tree.command(name="voice-record", description="Record decoded Discord audio for diagnosis")
+    async def slash_voice_record(interaction: discord.Interaction) -> None:
         guild = interaction.guild
-        
-        # Connect with the voice receive client protocol
-        if guild.voice_client:
-            vc = guild.voice_client
-            if vc.channel != channel:
-                await vc.move_to(channel)
-        else:
-            vc = await channel.connect(cls=voice_recv.VoiceRecvClient)
-        
-        loop = asyncio.get_running_loop()
-        
-        # 'self' refers to your bot app instance. 
-        # This securely ties Gladia's final text output to the new method we added above.
-        ai_callback = lambda user_id, text: app.handle_voice_input(guild, user_id, text)
+        voice_state = getattr(interaction.user, "voice", None)
+        if guild is None or voice_state is None or voice_state.channel is None:
+            await interaction.response.send_message(
+                "Join a server voice channel first.", ephemeral=True
+            )
+            return
+        try:
+            voice_sessions.validate_diagnostic_start(guild.id)
+        except VoiceSessionError as exc:
+            await interaction.response.send_message(
+                str(exc),
+                ephemeral=True,
+            )
+            return
 
-        sink = GladiaStreamingSink(loop, ai_callback=ai_callback)
-        vc.listen(sink)
-        
-        await interaction.response.send_message("AI companion joined the channel and is listening!")
+        # A failed/cancelled acknowledgement must not leave a manager reservation.
+        await interaction.response.defer(thinking=True)
+        channel = voice_state.channel
+        try:
+            # Privacy/consent notice must be visible before connection, listen,
+            # capture construction, or any WAV file can begin.
+            await interaction.followup.send(
+                "🔴 **Diagnostic voice recording is about to start.** Everyone in "
+                "the channel: decoded audio will be saved locally as per-speaker "
+                "WAV files until `/voice-stop` is used."
+            )
+            await voice_sessions.start_diagnostic(
+                guild=guild,
+                voice_channel=channel,
+            )
+            await interaction.followup.send(
+                "Diagnostic recording started. Use `/voice-stop` when the test phrase "
+                "is finished."
+            )
+            return
+        except BaseException as exc:
+            # This is idempotent and cancellation-latched. If the public notice
+            # failed after listen began, capture and Discord ownership still close.
+            if voice_sessions.has_diagnostic(guild.id):
+                try:
+                    await voice_sessions.stop_diagnostic(guild.id)
+                except VoiceSessionError:
+                    pass
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            print(
+                "[voice] Could not start diagnostic capture "
+                f"({type(exc).__name__})"
+            )
+            await interaction.followup.send(
+                "Voice recording could not start. Check the bot terminal for the "
+                f"transport error (`{type(exc).__name__}`).",
+                ephemeral=True,
+            )
+            return
+
+    @tree.command(name="voice-stop", description="Stop diagnostic voice recording")
+    async def slash_voice_stop(interaction: discord.Interaction) -> None:
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message(
+                "This command only works in a server.", ephemeral=True
+            )
+            return
+        if not voice_sessions.has_diagnostic(guild.id):
+            await interaction.response.send_message(
+                "No diagnostic voice recording is running.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(thinking=True)
+        try:
+            stopped = await voice_sessions.stop_diagnostic(guild.id)
+        except VoiceSessionError as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+            return
+        if stopped is None:
+            await interaction.followup.send(
+                "No diagnostic voice recording is running.", ephemeral=True
+            )
+            return
+
+        summaries = stopped.summaries
+        if not summaries:
+            result = "Recording stopped, but no human PCM frames were captured."
+        else:
+            lines = [
+                "Recording stopped. Local diagnostic files:",
+                f"`{stopped.output_dir}`",
+            ]
+            for summary in summaries[:10]:
+                lines.append(
+                    f"- `{summary.path.name}` — {summary.display_name}, "
+                    f"{summary.duration_seconds:.2f}s"
+                )
+            if len(summaries) > 10:
+                lines.append(f"- …and {len(summaries) - 10} more speaker files")
+            result = "\n".join(lines)
+        await interaction.followup.send(result)
