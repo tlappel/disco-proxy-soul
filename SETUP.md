@@ -103,7 +103,7 @@ WATCH_CHANNEL_ID=paste-the-channel-id-from-step-6
 ```
 
 Leave `PERSONA_ID=example` and `PERSONA_DIR=personas/example` for the first
-run. You will change those when you add your own persona (step 10).
+run. You will change those when you add your own persona (step 8).
 
 Save and close.
 
@@ -132,11 +132,12 @@ The session also stops automatically if its starter leaves or changes voice chan
 The example persona is a blank, public-safe voice. To use your own:
 
 1. Copy the folder `personas\example` and rename the copy (e.g. `personas\nova`).
-2. Open `persona.md` in Notepad. This is who they are. Write in plain language.
-3. Open `persona.json` and set `companion_name` (their name) and `partner_name`
-   (your name).
-4. Optional: `voice.md` is how they write. `facts.seed.json` is durable facts
-   about you. `docs\` holds extra reference notes.
+2. Open `identity.md` in Notepad (older copies may say `persona.md` — same
+   job). This is who they are. Write in plain language.
+3. Open `manifest.json` (or `persona.json`) and set `companion_name` (their
+   name) and `partner_name` (your name).
+4. Optional: `voice.md` is how they write. If you skip it, a built-in default
+   voice is used. `facts.seed.json` is durable facts about you.
 5. In `.env` set:
 
 ```
@@ -144,7 +145,45 @@ PERSONA_ID=nova
 PERSONA_DIR=personas/nova
 ```
 
-Use your folder name, not `nova`, if you picked something else.
+Use your folder name, not `nova`, if you picked something else. The folder
+does not have to live inside this project. `PERSONA_DIR` can be a full path
+to a private folder on your machine.
+
+### Adding extra notes later
+
+The example only has `docs\shared-context.md`. That file is always-on because
+the manifest lists it, not because of a special folder.
+
+Two ways to add more. They do the same job. Then type `/reload-docs` in
+Discord (or restart the bot).
+
+**A — Create a folder and drop the file in**
+
+| You create | What happens |
+|---|---|
+| `docs\always\` | In every reply |
+| `docs\presence\` | Only while `/presence` is on |
+| `docs\` (just drop the file there) | Library. `/docs` can show it. The model does not see it yet. |
+
+Those folders are not in the example. You make them when you need them.
+
+**B — Leave the file where it is and name it in `manifest.json`**
+
+```
+"always_on_docs": ["shared-context.md", "life.md"]
+```
+
+or:
+
+```
+"layers": {
+  "life.md": { "mode": "always_on" },
+  "docs/intimate-presence.md": { "mode": "presence" }
+}
+```
+
+`/presence` is a switch for whatever you put in the presence slot (intimate
+register, or something else). `/recall` searches **memories**, not these files.
 
 ## Step 9 — Run it
 
@@ -181,6 +220,9 @@ In the watch channel (or a DM, or @ them), say hello.
 
 Type `/` and look for `/status`. The first time, Discord sometimes needs a
 client restart before slash commands appear.
+
+`/moment` saves a highlight in your words. `/moments` shows those plus
+ones the host scored. `/journal` is theirs — they write it; it can be empty.
 
 Do not run this twice at once with the same bot token. They will answer
 everything twice.

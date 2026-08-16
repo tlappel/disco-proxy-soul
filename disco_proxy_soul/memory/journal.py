@@ -1,4 +1,4 @@
-"""Significant-moment journal (markdown append)."""
+"""Markdown append logs: host moments and the companion's journal."""
 
 from __future__ import annotations
 
@@ -6,7 +6,9 @@ from datetime import datetime
 from pathlib import Path
 
 
-class JournalStore:
+class MarkdownLog:
+    """Append-only markdown file. Used for moments and for her journal."""
+
     def __init__(self, path: Path) -> None:
         self.path = path
 
@@ -28,3 +30,21 @@ class JournalStore:
         if not self.path.exists():
             return 0
         return self.path.read_text(encoding="utf-8").count("---")
+
+
+def migrate_journal_to_moments(data_dir: Path, persona_id: str) -> bool:
+    """Move the old host highlight file to *_moments.md once.
+
+    Existing *_journal.md was host + partner highlights, not her keep.
+    If moments already exists, leave both files alone.
+    """
+    old = data_dir / f"{persona_id}_journal.md"
+    new = data_dir / f"{persona_id}_moments.md"
+    if new.exists() or not old.exists():
+        return False
+    old.rename(new)
+    return True
+
+
+# Older import name
+JournalStore = MarkdownLog

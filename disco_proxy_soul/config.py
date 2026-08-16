@@ -7,6 +7,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def _moments_threshold() -> float:
+    raw = os.getenv("MOMENTS_THRESHOLD")
+    if raw is None or raw.strip() == "":
+        raw = os.getenv("JOURNAL_THRESHOLD", "0.7")
+    return float(raw)
+
+
 def _as_bool(value: str | None, default: bool) -> bool:
     if value is None or value == "":
         return default
@@ -79,7 +86,7 @@ class RuntimeConfig:
     max_recalled: int
     recall_prefilter_limit: int
     recall_silence_min: int
-    journal_threshold: float
+    moments_threshold: float
     reach_enabled: bool
     reach_max_per_day: int
     reach_min_silence_h: float
@@ -151,7 +158,7 @@ class RuntimeConfig:
             max_recalled=int(os.getenv("MAX_RECALLED", "5")),
             recall_prefilter_limit=int(os.getenv("RECALL_PREFILTER_LIMIT", "20")),
             recall_silence_min=int(os.getenv("RECALL_SILENCE_MIN", "30")),
-            journal_threshold=float(os.getenv("JOURNAL_THRESHOLD", "0.7")),
+            moments_threshold=_moments_threshold(),
             reach_enabled=_as_bool(os.getenv("REACH_ENABLED"), True),
             reach_max_per_day=int(os.getenv("REACH_MAX_PER_DAY", "2")),
             reach_min_silence_h=float(os.getenv("REACH_MIN_SILENCE_HOURS", "2")),

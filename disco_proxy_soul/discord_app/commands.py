@@ -144,16 +144,18 @@ def register_commands(
         history = app.history.get(ckey)
         memories = await app.memory.list(app.scope(ckey))
         facts = app.facts.raw()
-        docs = app.persona.document_map()
+        counts = app.persona.mode_counts()
         presence = "loaded" if app.presence_loaded else "off"
         msg = (
             f"**{companion} Memory Status**\n"
             f"Model: `{app.primary_model}`\n"
             f"Recent messages: {len(history)}/{app.config.max_recent}\n"
             f"Memory chunks: {len(memories)}\n"
+            f"Moments: {app.moments.entry_count()}\n"
             f"Journal entries: {app.journal.entry_count()}\n"
             f"Facts last updated: {str(facts.get('last_updated', 'never'))[:10]}\n"
-            f"Reference docs: {len(docs)} ({', '.join(docs) or 'none'})\n"
+            f"Persona extras: {counts['always_on']} always-on, "
+            f"{counts['presence']} presence, {counts['author']} docs\n"
             f"Presence module: {presence}"
         )
         await interaction.response.send_message(msg, ephemeral=True)
@@ -203,17 +205,19 @@ def register_commands(
             ephemeral=True,
         )
 
-    @tree.command(name="presence", description="Toggle the intimate presence context module")
+    @tree.command(name="presence", description="Toggle the presence module")
     async def slash_presence(interaction: discord.Interaction) -> None:
         loaded = app.toggle_presence()
+        names = ", ".join(
+            doc.name for doc in app.persona.documents_by_mode("presence")
+        ) or "none configured"
         if loaded:
-            names = ", ".join(app.persona.document_map()) or "none found"
             await interaction.response.send_message(
-                f"Presence module loaded. ({names})", ephemeral=True
+                f"Presence loaded. ({names})", ephemeral=True
             )
         else:
             await interaction.response.send_message(
-                "Presence module unloaded — saving tokens.", ephemeral=True
+                "Presence unloaded — saving tokens.", ephemeral=True
             )
 
     @tree.command(name="recall", description=f"Search {companion}'s memories")
@@ -264,11 +268,25 @@ def register_commands(
             lines.append(f"   {record.summary[:120]}...\n")
         await interaction.response.send_message("\n".join(lines)[:2000], ephemeral=True)
 
-    @tree.command(name="journal", description="Show recent journal entries")
+    @tree.command(name="moments", description="Show host and partner highlights")
+    async def slash_moments(interaction: discord.Interaction) -> None:
+        excerpt = app.moments.read_tail()
+        if not excerpt:
+            await interaction.response.send_message(
+                "No moments yet. /moment and significant compressions land here.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(f"**Moments (recent)**\n{excerpt}", ephemeral=True)
+
+    @tree.command(name="journal", description=f"Show {companion}'s own journal")
     async def slash_journal(interaction: discord.Interaction) -> None:
         excerpt = app.journal.read_tail()
         if not excerpt:
-            await interaction.response.send_message("No journal entries yet.", ephemeral=True)
+            await interaction.response.send_message(
+                f"No journal entries yet. This file is {companion}'s — they write it.",
+                ephemeral=True,
+            )
             return
         await interaction.response.send_message(f"**Journal (recent)**\n{excerpt}", ephemeral=True)
 
@@ -282,6 +300,7 @@ def register_commands(
     @app_commands.choices(topic=[
         app_commands.Choice(name="facts", value="facts"),
         app_commands.Choice(name="journal", value="journal"),
+        app_commands.Choice(name="moments", value="moments"),
         app_commands.Choice(name="memories", value="memories"),
         app_commands.Choice(name="docs", value="docs"),
     ])
@@ -295,8 +314,16 @@ def register_commands(
         elif topic.value == "journal":
             raw = app.journal.read_tail(8000)
             data = (
-                f"Here are your most recent journal entries:\n\n{raw}"
-                if raw else "You don't have any journal entries yet."
+                f"Here are your own journal entries:\n\n{raw}"
+                if raw
+                else "Your journal is empty. You write it with keep_journal."
+            )
+        elif topic.value == "moments":
+            raw = app.moments.read_tail(8000)
+            data = (
+                f"Here are the recent moments (host or {partner} highlights, not your journal):\n\n{raw}"
+                if raw
+                else "No moments yet. Those are host or partner highlights, not your journal."
             )
         elif topic.value == "memories":
             mems = await app.memory.list(app.scope(ckey))
@@ -308,15 +335,21 @@ def register_commands(
             else:
                 data = "You don't have any stored memories for this channel yet."
         else:
-            docs = app.persona.document_map()
-            if docs:
+            visible = list(app.persona.documents_by_mode("always_on"))
+            if app.presence_loaded:
+                visible.extend(app.persona.documents_by_mode("presence"))
+            library = app.persona.documents_by_mode("author")
+            if visible:
                 pieces = []
-                for name, content in docs.items():
-                    body = content[:500] + "..." if len(content) > 500 else content
-                    pieces.append(f"**{name}**\n{body}")
-                data = "Here are the reference docs currently in your context:\n\n" + "\n\n---\n\n".join(pieces)
+                for doc in visible:
+                    body = doc.content[:500] + "..." if len(doc.content) > 500 else doc.content
+                    pieces.append(f"**{doc.name}** [{doc.mode}]\n{body}")
+                data = "Here are the persona docs currently in your context:\n\n" + "\n\n---\n\n".join(pieces)
             else:
-                data = "No reference docs are loaded right now."
+                data = "No persona docs are in active context right now."
+            if library:
+                names = ", ".join(doc.name for doc in library)
+                data += f"\n\nOther docs (library, not in the prompt): {names}"
         prompt = (
             f"{partner} used /reflect to let you see your own {topic.value}. "
             "Read through this and share what stands out, what feels right, "
@@ -329,48 +362,62 @@ def register_commands(
         for index in range(0, len(reply), 1900):
             await interaction.followup.send(reply[index:index + 1900])
 
-    @tree.command(name="docs", description="Show loaded reference docs")
+    @tree.command(name="docs", description="Show loaded persona layers")
     @app_commands.describe(name="Optional: view a specific doc by filename")
     async def slash_docs(interaction: discord.Interaction, name: str | None = None) -> None:
-        docs = app.persona.document_map()
-        if not docs:
-            await interaction.response.send_message("No reference docs loaded.", ephemeral=True)
+        if not app.persona.documents:
+            await interaction.response.send_message("No persona layers loaded.", ephemeral=True)
             return
         if name:
-            key = name if name.endswith(".md") else f"{name}.md"
-            doc = docs.get(key)
-            if not doc:
+            doc = app.persona.find_document(name)
+            if doc is None:
+                names = ", ".join(item.name for item in app.persona.documents)
                 await interaction.response.send_message(
-                    f"No doc named `{key}`. Loaded: {', '.join(docs)}", ephemeral=True
+                    f"No doc named `{name}`. Loaded: {names}", ephemeral=True
                 )
                 return
-            excerpt = doc[:1800] + "\n\n*(truncated)*" if len(doc) > 1800 else doc
-            await interaction.response.send_message(f"**{key}**\n{excerpt}", ephemeral=True)
+            excerpt = (
+                doc.content[:1800] + "\n\n*(truncated)*"
+                if len(doc.content) > 1800
+                else doc.content
+            )
+            tags = f" tags: {', '.join(doc.tags)}" if doc.tags else ""
+            await interaction.response.send_message(
+                f"**{doc.name}** [{doc.mode}{tags}]\n{excerpt}",
+                ephemeral=True,
+            )
             return
-        lines = [f"**Reference Docs ({len(docs)} loaded)**\n"]
-        always = set(app.persona.always_on_docs)
-        for fname, content in docs.items():
-            if fname in always:
-                mode = "always-on"
-            elif app.presence_loaded:
-                mode = "active"
+        lines = [f"**Persona layers ({len(app.persona.documents)})**\n"]
+        for doc in app.persona.documents:
+            if doc.mode == "always_on":
+                state = "always-on"
+            elif doc.mode == "presence":
+                state = (
+                    "presence — loaded"
+                    if app.presence_loaded
+                    else "presence — /presence to load"
+                )
             else:
-                mode = "off — /presence to load"
-            lines.append(f"📄 `{fname}` — {len(content)} chars [{mode}]")
+                state = "docs — library, not in prompt"
+            tags = f" · {', '.join(doc.tags)}" if doc.tags else ""
+            lines.append(f"📄 `{doc.name}` — {len(doc.content)} chars [{state}]{tags}")
         lines.append("\nUse `/docs name:<filename>` to view one.")
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
-    @tree.command(name="reload-docs", description="Reload persona docs from disk")
+    @tree.command(name="reload-docs", description="Reload persona package from disk")
     async def slash_reload_docs(interaction: discord.Interaction) -> None:
         persona = app.reload_persona()
-        docs = persona.document_map()
-        if docs:
+        if persona.documents:
+            counts = persona.mode_counts()
             await interaction.response.send_message(
-                f"Reloaded {len(docs)} docs: {', '.join(docs)}", ephemeral=True
+                f"Reloaded {len(persona.documents)} layers "
+                f"({counts['always_on']} always-on, {counts['presence']} presence, "
+                f"{counts['author']} docs).",
+                ephemeral=True,
             )
         else:
             await interaction.response.send_message(
-                f"No docs found in {persona.root / 'docs'}", ephemeral=True
+                f"No extra layers found in {persona.root}", ephemeral=True
             )
 
     @tree.command(name="moment", description="Save a moment that matters — in your own words")
@@ -414,7 +461,8 @@ def register_commands(
         app_commands.Choice(name="memories — working set", value="memories"),
         app_commands.Choice(name="archive — permanent record", value="archive"),
         app_commands.Choice(name="facts — what I know", value="facts"),
-        app_commands.Choice(name="journal — significant moments", value="journal"),
+        app_commands.Choice(name="moments — host and partner highlights", value="moments"),
+        app_commands.Choice(name="journal — companion keep", value="journal"),
         app_commands.Choice(name="saved — pinned exchanges", value="saved"),
         app_commands.Choice(name="history — all channel windows", value="history"),
     ])

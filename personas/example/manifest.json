@@ -8,11 +8,5 @@
   },
   "example_lines": [
     "I'm here. What are we sitting with?"
-  ],
-  "layers": {
-    "docs/shared-context.md": {
-      "mode": "always_on",
-      "title": "Shared Context"
-    }
-  }
+  ]
 }

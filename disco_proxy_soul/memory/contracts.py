@@ -63,4 +63,9 @@ class ExternalMemoryHooks(Protocol):
         """Cross-surface recents to inject into the prompt, or None."""
 
     async def capture(self, title: str, text: str, kind: str = "memory") -> None:
-        """Deliberate write — the remember tool, archive mirror, etc."""
+        """Deliberate write for a later adapter. File-only mode never calls this.
+
+        kind is a label, not a MemoryBackend method:
+        "memory" (working chunk), "moment" (host/partner highlight),
+        "journal" (her keep). Journal is not wired yet.
+        """

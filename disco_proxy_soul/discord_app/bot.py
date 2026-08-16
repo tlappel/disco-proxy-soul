@@ -220,17 +220,17 @@ async def _outreach_loop(client: discord.Client, app: CompanionApp) -> None:
 def run() -> None:
     env_file = os.getenv("ENV_FILE", "").strip()
     if env_file:
-        if not load_dotenv(env_file):
+        if not load_dotenv(env_file, override=False):
             raise SystemExit(f"ENV_FILE could not be loaded: {env_file}")
         print(f"Runtime environment: {env_file}")
-    else:
-        load_dotenv()
+    load_dotenv(override=False)
     config = RuntimeConfig.from_env()
     configure_application_logging(config.gladia_api_key)
     if not config.discord_token:
         raise SystemExit(
             "Missing DISCORD_TOKEN.\n"
-            "Copy .env.v2.example to .env and fill DISCORD_TOKEN plus a provider key "
+            "Set ENV_FILE to your private .env, or copy .env.example to .env "
+            "and fill DISCORD_TOKEN plus a provider key "
             "(XAI_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY)."
         )
     if not (config.xai_api_key or config.anthropic_api_key or config.openai_api_key):

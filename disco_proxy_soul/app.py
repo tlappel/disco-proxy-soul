@@ -15,10 +15,17 @@ from .memory.contracts import MemoryRecord, Scope
 from .memory.facts import FactStore
 from .memory.file_backend import FileMemoryBackend, record_to_dict
 from .memory.history import ConversationStore
-from .memory.journal import JournalStore
+from .memory.journal import MarkdownLog, migrate_journal_to_moments
 from .memory.saved import SavedStore
 from .memory.store import normalize_memory_data, parse_llm_json
-from .models.contracts import ContentPart, ModelMessage, ModelRequest, ModelRouter
+from .models.contracts import (
+    ContentPart,
+    ModelMessage,
+    ModelRequest,
+    ModelRouter,
+    ToolCall,
+    ToolSpec,
+)
 from .models.factory import build_router, catalog_for
 from .outreach import OutreachState
 from .persona.loader import load_persona
@@ -35,6 +42,7 @@ def _paths(config: RuntimeConfig) -> dict[str, Path]:
         "memories": root / f"{prefix}_memories.json",
         "archive": root / f"{prefix}_memories_archive.json",
         "facts": root / f"{prefix}_facts.json",
+        "moments": root / f"{prefix}_moments.md",
         "journal": root / f"{prefix}_journal.md",
         "saved": root / f"{prefix}_saved.md",
         "outreach": root / f"{prefix}_outreach.json",
@@ -49,14 +57,15 @@ class CompanionApp:
     memory: FileMemoryBackend
     history: ConversationStore
     facts: FactStore
-    journal: JournalStore
+    moments: MarkdownLog
+    journal: MarkdownLog
     saved: SavedStore
     archive: ArchiveStore
     outreach: OutreachState
     primary_model: str
     cheap_model: str
     catalog: dict[str, str]
-    journal_threshold: float = 0.7
+    moments_threshold: float = 0.7
     presence_loaded: bool = False
     _last_message_time: dict[str, datetime] = field(default_factory=dict)
     _cached_recall: dict[str, list[MemoryRecord]] = field(default_factory=dict)
@@ -66,8 +75,9 @@ class CompanionApp:
     def from_env(cls, config: RuntimeConfig | None = None) -> "CompanionApp":
         config = config or RuntimeConfig.from_env()
         persona = load_persona(config.persona_dir, config.persona_id)
-        paths = _paths(config)
         config.data_dir.mkdir(parents=True, exist_ok=True)
+        migrate_journal_to_moments(config.data_dir, config.persona_id)
+        paths = _paths(config)
         app = cls(
             config=config,
             persona=persona,
@@ -75,7 +85,8 @@ class CompanionApp:
             memory=FileMemoryBackend(paths["memories"]),
             history=ConversationStore(paths["history"]),
             facts=FactStore(paths["facts"], persona.facts_seed),
-            journal=JournalStore(paths["journal"]),
+            moments=MarkdownLog(paths["moments"]),
+            journal=MarkdownLog(paths["journal"]),
             saved=SavedStore(paths["saved"]),
             archive=ArchiveStore(paths["archive"]),
             outreach=OutreachState(
@@ -94,11 +105,7 @@ class CompanionApp:
             cheap_model=config.cheap_ref()[1],
             catalog=catalog_for(config),
         )
-        policy_threshold = persona.memory_policy.get("journal_threshold")
-        if policy_threshold is not None:
-            app.journal_threshold = float(policy_threshold)
-        else:
-            app.journal_threshold = config.journal_threshold
+        app.moments_threshold = config.moments_threshold
         return app
 
     def scope(self, channel_id: str) -> Scope:
@@ -146,6 +153,7 @@ class CompanionApp:
             recall_query=text,
             presence=self.presence_loaded,
             interaction_mode=interaction_mode,
+            journal_excerpt=self.journal.read_tail(),
         )
         history = self.history.get(channel_id)
         messages = [
@@ -160,19 +168,9 @@ class CompanionApp:
             user_content = text
         messages.append(ModelMessage(role="user", content=user_content))
 
-        response = await self.models.complete(
-            "primary",
-            ModelRequest(
-                capability="chat",
-                messages=messages,
-                system=system,
-                model=self.primary_model,
-                max_tokens=8192,
-            ),
-        )
-        reply = sanitize_outgoing(response.text or "")
+        reply = await self._complete_with_tools(messages, system)
         if not reply.strip():
-            print(f"[api] empty reply (stop={response.stop_reason}) — nothing stored")
+            print("[api] empty reply after tool loop — nothing stored")
             return "That one got away from me mid-thought — say it again for me?"
 
         self.history.append(channel_id, "user", text)
@@ -183,6 +181,93 @@ class CompanionApp:
         if len(self.history.get(channel_id)) >= self.config.max_recent:
             asyncio.create_task(self.compress(channel_id))
         return reply
+
+    def _journal_tools(self) -> tuple[ToolSpec, ...]:
+        name = self.persona.companion_name
+        return (
+            ToolSpec(
+                name="keep_journal",
+                description=(
+                    f"Write an entry in {name}'s own journal. This is yours — "
+                    "not searchable memories, and not moments (those are host "
+                    "or partner highlights). Write in your own words."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "text": {
+                            "type": "string",
+                            "description": "The journal entry in your own words.",
+                        },
+                    },
+                    "required": ["text"],
+                },
+            ),
+            ToolSpec(
+                name="read_journal",
+                description=(
+                    "Read your journal. Use this for your own keep, not for "
+                    "memories or moments."
+                ),
+                input_schema={"type": "object", "properties": {}},
+            ),
+        )
+
+    async def _complete_with_tools(
+        self,
+        messages: list[ModelMessage],
+        system: str,
+        max_rounds: int = 4,
+    ) -> str:
+        tools = self._journal_tools()
+        for _ in range(max_rounds):
+            response = await self.models.complete(
+                "primary",
+                ModelRequest(
+                    capability="chat",
+                    messages=messages,
+                    system=system,
+                    model=self.primary_model,
+                    max_tokens=8192,
+                    tools=tools,
+                ),
+            )
+            if response.tool_calls:
+                messages.append(
+                    ModelMessage(
+                        role="assistant",
+                        content=response.text or "",
+                        tool_calls=response.tool_calls,
+                    )
+                )
+                messages.extend(self._execute_tool_calls(response.tool_calls))
+                continue
+            return sanitize_outgoing(response.text or "")
+        return sanitize_outgoing(response.text or "")
+
+    def _execute_tool_calls(self, calls: tuple[ToolCall, ...]) -> list[ModelMessage]:
+        results: list[ModelMessage] = []
+        for call in calls:
+            if call.name == "keep_journal":
+                text = str(call.input.get("text") or "").strip()
+                if not text:
+                    body = "Nothing written — text was empty."
+                else:
+                    self.keep_journal(text)
+                    body = "Kept in your journal."
+            elif call.name == "read_journal":
+                raw = self.journal.read_tail(8000)
+                body = raw if raw else "Your journal is empty."
+            else:
+                body = f"Unknown tool: {call.name}"
+            results.append(
+                ModelMessage(role="tool", content=body, tool_call_id=call.id)
+            )
+        return results
+
+    def keep_journal(self, text: str) -> None:
+        self.journal.append(text.strip(), ["journal", "kept"])
+        print("[journal] companion kept an entry")
 
     async def recall_command(self, channel_id: str, query: str) -> list[MemoryRecord]:
         records = await self.memory.recall(
@@ -321,8 +406,8 @@ Return ONLY valid JSON:
                 f"[memory] Compressed {len(chunk)} messages "
                 f"(sig={record.significance:.1f})"
             )
-            if record.significance >= self.journal_threshold:
-                self.journal.append(record.summary, list(record.tags))
+            if record.significance >= self.moments_threshold:
+                self.moments.append(record.summary, list(record.tags))
             asyncio.create_task(self._maybe_update_facts(convo))
         except Exception as exc:
             print(f"[memory] Compression error: {exc}")
@@ -377,7 +462,7 @@ Return ONLY valid JSON, nothing else."""
                 significance=1.0,
             ),
         )
-        self.journal.append(f"💛 {partner} kept this moment: {text}", ["moment", "kept"])
+        self.moments.append(f"💛 {partner} kept this moment: {text}", ["moment", "kept"])
         print(f"[memory] moment saved {record.memory_id}")
 
     async def pin_exchange(
@@ -462,8 +547,8 @@ Return ONLY the session brief text, no JSON, no formatting — just the notes.""
                 significance=data["significance"],
             ),
         )
-        if record.significance >= self.journal_threshold:
-            self.journal.append(f"[Pruned session] {record.summary}", list(record.tags))
+        if record.significance >= self.moments_threshold:
+            self.moments.append(f"[Pruned session] {record.summary}", list(record.tags))
         count = len(history)
         self.history.replace(
             channel_id,

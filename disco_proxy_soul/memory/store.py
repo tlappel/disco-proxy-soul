@@ -72,7 +72,7 @@ def parse_llm_json(text: str) -> Any:
 
 
 def normalize_memory_data(data: dict[str, Any] | Any, fallback_summary: str) -> dict[str, Any]:
-    """Keep malformed memory fields from breaking save/journal paths."""
+    """Keep malformed memory fields from breaking save/moments paths."""
     if not isinstance(data, dict):
         data = {}
 
