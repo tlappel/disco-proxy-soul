@@ -53,6 +53,15 @@ def register_commands(
 
     def live_status_text(status: VoiceSessionStatus) -> str:
         counters = status.counters
+
+        def latency(metric) -> str:
+            if not metric.samples:
+                return "n/a"
+            return (
+                f"{metric.last_ms:.0f}/{metric.average_ms:.0f}/"
+                f"{metric.maximum_ms:.0f}"
+            )
+
         return (
             f"**Live Voice Status — {status.state.value}**\n"
             f"Starter: **{status.starter_name}**\n"
@@ -72,6 +81,11 @@ def register_commands(
             f"{counters.finals_spoken_during_playback}\n"
             f"Intentional barge-ins: {counters.barge_in_cues}; "
             f"playbacks interrupted: {counters.interrupted_playbacks}\n"
+            "Latency ms (last/avg/max): "
+            f"STT {latency(counters.stt_final_latency)}; "
+            f"model {latency(counters.cognition_latency)}; "
+            f"TTS {latency(counters.tts_first_frame_latency)}; "
+            f"play {latency(counters.playback_start_latency)}\n"
             f"Inserted silence: {counters.inserted_silence_samples / 48_000:.2f}s; "
             f"RTP gaps: {counters.rtp_gap_samples / 48_000:.2f}s\n"
             f"RTP discontinuities: {counters.rtp_discontinuities}; "

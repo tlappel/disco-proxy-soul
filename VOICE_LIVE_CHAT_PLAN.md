@@ -438,9 +438,14 @@ clock drops were two, late samples were zero, Gladia completion was normal,
 and no warning remained. The full automated suite passed `203/203` after the
 user-facing cue regression was added.
 
-Phase 5C is next: bounded Gladia reconnect, long-session rotation, and latency
-observability. Do not broaden the accepted cue contract into energy-only
-interruption without new echo measurements and deterministic regressions.
+Phase 5C is next: bounded Gladia reconnect, long-session rotation, latency
+observability, and an explicit continuity scope above Discord channel scope.
+Keep recent working history local to its channel, but allow relevant memories
+to be recalled across voice and text when they belong to the same permitted
+companion-human relationship. Preserve source-channel provenance and never
+fall back to an unscoped all-channel search. Do not broaden the accepted cue
+contract into energy-only interruption without new echo measurements and
+deterministic regressions.
 
 ### Implement
 
@@ -454,6 +459,9 @@ interruption without new echo measurements and deterministic regressions.
 - Preserve session IDs for result recovery without logging bearer URLs.
 - Surface DAVE frame drops, audio queue drops, STT latency, model latency, TTS
   first-byte latency, and playback latency.
+- Separate conversation location from continuity identity: retain per-channel
+  rolling history while permitting scoped cross-channel memory recall for the
+  same companion-human relationship.
 - Stop cleanly when the starter leaves, the bot is moved/disconnected, or the
   process shuts down.
 
@@ -462,6 +470,8 @@ interruption without new echo measurements and deterministic regressions.
 - Injected transport failures do not deadlock Discord receive.
 - Playback cancellation does not stop listening.
 - Stop during STT, cognition, TTS, and playback is idempotent.
+- A memory formed in voice can be recalled from text and vice versa within the
+  same continuity scope; unrelated users and scopes remain excluded.
 - A dependency compatibility test continues to cover the pinned DAVE fork and
   corrupt-frame guard.
 
@@ -469,6 +479,8 @@ interruption without new echo measurements and deterministic regressions.
 
 - Do not automatically upgrade beyond the pinned discord.py/receive-fork pair.
 - Do not resend unacknowledged Gladia bytes without an integration-tested rule.
+- Do not flatten every Discord channel into one history or enable cross-user
+  recall merely because the backing store contains multiple channel buckets.
 - Do not use the extension's approximate speaking-stop event as the only turn
   boundary.
 

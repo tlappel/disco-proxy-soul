@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from array import array
 import queue
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
 import discord
 
@@ -22,7 +22,12 @@ class VoicePlaybackError(RuntimeError):
 class StreamingPcmAudioSource(discord.AudioSource):
     """Accept arbitrary mono PCM16 chunks and expose exact Discord frames."""
 
-    def __init__(self, *, capacity_frames: int = 100) -> None:
+    def __init__(
+        self,
+        *,
+        capacity_frames: int = 100,
+        on_first_frame: Callable[[], None] | None = None,
+    ) -> None:
         self._frames: queue.Queue[bytes | object] = queue.Queue(
             maxsize=max(1, int(capacity_frames))
         )
@@ -31,6 +36,8 @@ class StreamingPcmAudioSource(discord.AudioSource):
         self._closed = False
         self._finished = False
         self._error: BaseException | None = None
+        self._on_first_frame = on_first_frame
+        self._first_frame_reported = False
 
     def is_opus(self) -> bool:
         return False
@@ -93,6 +100,10 @@ class StreamingPcmAudioSource(discord.AudioSource):
                 )
             return b""
         assert isinstance(item, bytes)
+        if not self._first_frame_reported:
+            self._first_frame_reported = True
+            if self._on_first_frame is not None:
+                self._on_first_frame()
         return item
 
     def cleanup(self) -> None:
@@ -121,10 +132,15 @@ class VoicePlayback:
         self,
         voice_client: Any,
         chunks: AsyncIterator[bytes],
+        *,
+        on_first_frame: Callable[[], None] | None = None,
     ) -> None:
         loop = asyncio.get_running_loop()
         done: asyncio.Future[BaseException | None] = loop.create_future()
-        source = StreamingPcmAudioSource(capacity_frames=self.capacity_frames)
+        source = StreamingPcmAudioSource(
+            capacity_frames=self.capacity_frames,
+            on_first_frame=on_first_frame,
+        )
 
         def after(error: BaseException | None) -> None:
             def finish() -> None:

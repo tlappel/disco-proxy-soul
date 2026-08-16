@@ -135,8 +135,11 @@ class FakePlayback:
         self.capacity_frames = capacity_frames
         self.calls = []
 
-    async def play(self, voice_client, chunks):
-        self.calls.append((voice_client, [chunk async for chunk in chunks]))
+    async def play(self, voice_client, chunks, *, on_first_frame=None):
+        rendered = [chunk async for chunk in chunks]
+        self.calls.append((voice_client, rendered))
+        if rendered and on_first_frame is not None:
+            on_first_frame()
 
 
 class BlockingPlayback(FakePlayback):
@@ -148,8 +151,11 @@ class BlockingPlayback(FakePlayback):
         self.active = 0
         self.max_active = 0
 
-    async def play(self, voice_client, chunks):
-        self.calls.append((voice_client, [chunk async for chunk in chunks]))
+    async def play(self, voice_client, chunks, *, on_first_frame=None):
+        rendered = [chunk async for chunk in chunks]
+        self.calls.append((voice_client, rendered))
+        if rendered and on_first_frame is not None:
+            on_first_frame()
         self.active += 1
         self.max_active = max(self.max_active, self.active)
         self.entered.set()
@@ -1216,10 +1222,13 @@ class VoiceSessionAsyncTests(unittest.IsolatedAsyncioTestCase):
                 "Speak back",
                 final=True,
                 start=start,
-                end=session._speech_evidence.duration,
+                end=session._speech_evidence.duration - 0.04,
             )
         )
         await self.wait_for(lambda: len(playback.calls) == 1)
+        await self.wait_for(
+            lambda: session.counters.playback_start_latency.samples == 1
+        )
         self.assertEqual(tts.texts, ["The same reply, exactly."])
         self.assertEqual(playback.calls, [(channel.client, [b"one", b"two"])])
         self.assertEqual(
@@ -1231,6 +1240,11 @@ class VoiceSessionAsyncTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(session.counters.companion_responses, 1)
         self.assertEqual(session.counters.spoken_responses, 1)
+        self.assertEqual(session.counters.stt_final_latency.samples, 1)
+        self.assertGreaterEqual(session.counters.stt_final_latency.last_ms, 40.0)
+        self.assertEqual(session.counters.cognition_latency.samples, 1)
+        self.assertEqual(session.counters.tts_first_frame_latency.samples, 1)
+        self.assertEqual(session.counters.playback_start_latency.samples, 1)
         await session.stop()
 
     async def test_turn_during_playback_waits_without_overlapping_response(self) -> None:

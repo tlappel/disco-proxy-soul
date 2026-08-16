@@ -86,13 +86,19 @@ class StreamingPcmAudioSourceTests(unittest.IsolatedAsyncioTestCase):
 class VoicePlaybackTests(unittest.IsolatedAsyncioTestCase):
     async def test_streams_frames_with_voice_opus_controls(self):
         client = ThreadedVoiceClient()
+        first_frame = threading.Event()
 
         async def chunks():
             mono = array("h", [500] * 960).tobytes()
             yield mono[:333]
             yield mono[333:]
 
-        await VoicePlayback(capacity_frames=4).play(client, chunks())
+        await VoicePlayback(capacity_frames=4).play(
+            client,
+            chunks(),
+            on_first_frame=first_frame.set,
+        )
+        self.assertTrue(first_frame.is_set())
         self.assertEqual(len(client.frames), 1)
         self.assertEqual(len(client.frames[0]), DISCORD_PCM_FRAME_BYTES)
         self.assertEqual(client.play_kwargs["application"], "voip")

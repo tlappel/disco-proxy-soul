@@ -11,12 +11,12 @@ import asyncio
 from array import array
 from bisect import bisect_left
 from collections import OrderedDict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from enum import Enum
 import logging
 import math
 import re
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, AsyncIterator, Awaitable, Callable, Protocol
 
 from discord.ext import voice_recv
 
@@ -156,6 +156,25 @@ class VoiceSessionState(str, Enum):
 
 
 @dataclass
+class LatencyMetric:
+    samples: int = 0
+    total_ms: float = 0.0
+    maximum_ms: float = 0.0
+    last_ms: float = 0.0
+
+    def observe_seconds(self, seconds: float) -> None:
+        milliseconds = max(0.0, float(seconds) * 1_000.0)
+        self.samples += 1
+        self.total_ms += milliseconds
+        self.maximum_ms = max(self.maximum_ms, milliseconds)
+        self.last_ms = milliseconds
+
+    @property
+    def average_ms(self) -> float:
+        return self.total_ms / self.samples if self.samples else 0.0
+
+
+@dataclass
 class VoiceSessionCounters:
     received_packets: int = 0
     enqueued_packets: int = 0
@@ -183,6 +202,10 @@ class VoiceSessionCounters:
     barge_in_cues: int = 0
     interrupted_playbacks: int = 0
     report_drops: int = 0
+    stt_final_latency: LatencyMetric = dataclass_field(default_factory=LatencyMetric)
+    cognition_latency: LatencyMetric = dataclass_field(default_factory=LatencyMetric)
+    tts_first_frame_latency: LatencyMetric = dataclass_field(default_factory=LatencyMetric)
+    playback_start_latency: LatencyMetric = dataclass_field(default_factory=LatencyMetric)
 
 
 @dataclass(frozen=True)
@@ -1120,6 +1143,9 @@ class VoiceSession:
                     self._request_barge_in(event)
                     if event.is_final:
                         self.counters.final_transcripts += 1
+                        self.counters.stt_final_latency.observe_seconds(
+                            self._speech_evidence.duration - event.end
+                        )
                         print(f"[voice:{self.guild_id}] [final] {self.starter_name}: {text}")
                         accepted = await self._turns.offer(event)
                         if not accepted:
@@ -1164,10 +1190,15 @@ class VoiceSession:
             async with self._conversation_lock:
                 if self.state is not VoiceSessionState.RUNNING:
                     return
+                loop = asyncio.get_running_loop()
+                cognition_started = loop.time()
                 reply = await self.app.respond(
                     self.conversation_key,
                     f"[{self.starter_name}]: {text}",
                     interaction_mode="voice",
+                )
+                self.counters.cognition_latency.observe_seconds(
+                    loop.time() - cognition_started
                 )
                 if self.state is not VoiceSessionState.RUNNING:
                     return
@@ -1183,11 +1214,24 @@ class VoiceSession:
                     self._playback_started_at = self._speech_evidence.duration
                     self._barge_in_requested = False
                     interrupted = False
+                    tts_started = loop.time()
+
+                    def note_playback_start() -> None:
+                        elapsed = loop.time() - tts_started
+                        loop.call_soon_threadsafe(
+                            self.counters.playback_start_latency.observe_seconds,
+                            elapsed,
+                        )
+
                     try:
                         self._playback_task = asyncio.create_task(
                             self._playback.play(
                                 self.voice_client,
-                                self._tts.stream_pcm(reply),
+                                self._measure_tts_first_frame(
+                                    self._tts.stream_pcm(reply),
+                                    started_at=tts_started,
+                                ),
+                                on_first_frame=note_playback_start,
                             ),
                             name=f"voice-playback-g{self.guild_id}",
                         )
@@ -1221,6 +1265,22 @@ class VoiceSession:
                 "voice_cognition",
                 self._safe_error(exc, prefix="Live voice response failed"),
             )
+
+    async def _measure_tts_first_frame(
+        self,
+        chunks: AsyncIterator[bytes],
+        *,
+        started_at: float,
+    ) -> AsyncIterator[bytes]:
+        observed = False
+        loop = asyncio.get_running_loop()
+        async for chunk in chunks:
+            if chunk and not observed:
+                observed = True
+                self.counters.tts_first_frame_latency.observe_seconds(
+                    loop.time() - started_at
+                )
+            yield chunk
 
     def _trigger_failure(self, key: str, message: str) -> None:
         if self.state in {VoiceSessionState.STOPPING, VoiceSessionState.STOPPED}:
@@ -1454,7 +1514,11 @@ class VoiceSession:
             "clock_dropped=%s pending_drops=%s late_samples=%s "
             "partials=%s finals=%s accepted_turns=%s rejected_finals=%s "
             "responses=%s spoken=%s finals_during_playback=%s "
-            "barge_cues=%s interrupted_playbacks=%s",
+            "barge_cues=%s interrupted_playbacks=%s "
+            "stt_latency_ms=%.0f/%.0f/%.0f "
+            "model_latency_ms=%.0f/%.0f/%.0f "
+            "tts_latency_ms=%.0f/%.0f/%.0f "
+            "play_latency_ms=%.0f/%.0f/%.0f",
             status.guild_id,
             status.channel_id,
             status.starter_user_id,
@@ -1479,6 +1543,18 @@ class VoiceSession:
             counters.finals_spoken_during_playback,
             counters.barge_in_cues,
             counters.interrupted_playbacks,
+            counters.stt_final_latency.last_ms,
+            counters.stt_final_latency.average_ms,
+            counters.stt_final_latency.maximum_ms,
+            counters.cognition_latency.last_ms,
+            counters.cognition_latency.average_ms,
+            counters.cognition_latency.maximum_ms,
+            counters.tts_first_frame_latency.last_ms,
+            counters.tts_first_frame_latency.average_ms,
+            counters.tts_first_frame_latency.maximum_ms,
+            counters.playback_start_latency.last_ms,
+            counters.playback_start_latency.average_ms,
+            counters.playback_start_latency.maximum_ms,
         )
 
     def _request_barge_in(self, event: TranscriptUpdate) -> bool:
