@@ -56,6 +56,35 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "ACTIVE_CHANNEL_IDS"):
                 RuntimeConfig.from_env()
 
+    def test_room_modes_are_explicit_and_nonoverlapping(self) -> None:
+        env = {
+            "WATCH_CHANNEL_ID": "11",
+            "ACTIVE_CHANNEL_IDS": "22",
+            "SOCIAL_CHANNEL_IDS": "33",
+            "ADDRESSED_CHANNEL_IDS": "44",
+            "IGNORED_CHANNEL_IDS": "55",
+            "MODEL_SOCIAL": "xai:grok-4.6",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = RuntimeConfig.from_env()
+        self.assertEqual(config.channel_mode(11), "private")
+        self.assertEqual(config.channel_mode(22), "private")
+        self.assertEqual(config.channel_mode(33), "social")
+        self.assertEqual(config.channel_mode(44), "addressed")
+        self.assertEqual(config.channel_mode(55), "ignored")
+        self.assertEqual(config.channel_mode(66), "addressed")
+        self.assertEqual(config.social_ref(), ("xai", "grok-4.6"))
+        self.assertFalse(config.social_ambient_enabled)
+
+    def test_overlapping_room_modes_fail_configuration(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"ACTIVE_CHANNEL_IDS": "22", "SOCIAL_CHANNEL_IDS": "22"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ValueError, "appears in both"):
+                RuntimeConfig.from_env()
+
 
 class PromptTests(unittest.TestCase):
     def test_voice_interaction_context_is_optional_system_only_guidance(self) -> None:

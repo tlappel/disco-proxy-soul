@@ -11,7 +11,9 @@ import discord
 from disco_proxy_soul.discord_app.bot import (
     _CompanionCommandTree,
     _author_allowed,
+    _message_policy,
     _response_trigger,
+    social_ambient_notice,
 )
 
 
@@ -28,6 +30,44 @@ class DiscordRoutingTests(unittest.TestCase):
             ),
             "active-channel",
         )
+
+    def test_room_policy_separates_partner_identity_from_public_disclosure(self):
+        self.assertIsNone(
+            _message_policy(
+                mode="private",
+                partner_configured=True,
+                is_partner=False,
+                direct_trigger="mention",
+                private_active=True,
+            )
+        )
+        social_partner = _message_policy(
+            mode="social",
+            partner_configured=True,
+            is_partner=True,
+            direct_trigger=None,
+            private_active=False,
+        )
+        self.assertEqual(social_partner.route_kind, "social")
+        self.assertEqual(social_partner.disclosure_scope, "public")
+        addressed_guest = _message_policy(
+            mode="addressed",
+            partner_configured=True,
+            is_partner=False,
+            direct_trigger="mention",
+            private_active=False,
+        )
+        self.assertEqual(addressed_guest.route_kind, "immediate")
+        self.assertEqual(addressed_guest.disclosure_scope, "public")
+
+    def test_social_notice_discloses_local_gate_and_selected_cloud_context(self):
+        notice = social_ambient_notice(
+            "Naomi", attention_model="qwen3:1.7b", response_provider="xai"
+        )
+        self.assertIn("local Ollama model `qwen3:1.7b`", notice)
+        self.assertIn("configured external `xai` response provider", notice)
+        self.assertIn("RAM", notice)
+        self.assertIn("Attachments", notice)
 
 
 class CommandPrivacyTests(unittest.IsolatedAsyncioTestCase):

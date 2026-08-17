@@ -91,16 +91,21 @@ class PersonaLoaderTests(unittest.TestCase):
             root = _write_package(Path(tmp) / "example")
             (root / "docs" / "always").mkdir()
             (root / "docs" / "presence").mkdir()
+            (root / "docs" / "public").mkdir()
             (root / "docs" / "always" / "practice.md").write_text(
                 "The practice", encoding="utf-8"
             )
             (root / "docs" / "presence" / "focus.md").write_text(
                 "Situational module", encoding="utf-8"
             )
+            (root / "docs" / "public" / "community.md").write_text(
+                "Public-safe identity", encoding="utf-8"
+            )
             persona = load_persona(root)
 
         self.assertEqual(persona.find_document("practice.md").mode, "always_on")
         self.assertEqual(persona.find_document("focus.md").mode, "presence")
+        self.assertEqual(persona.find_document("community.md").mode, "public")
 
     def test_root_markdown_defaults_to_library(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -164,6 +169,28 @@ class PersonaLoaderTests(unittest.TestCase):
         self.assertNotIn("Lilith draft notes", closed)
         self.assertNotIn("Lilith draft notes", open_presence)
         self.assertIn("Stay in the room", open_presence)
+
+    def test_public_projection_uses_only_public_document_layer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = _write_package(Path(tmp) / "example")
+            (root / "docs" / "public").mkdir()
+            (root / "docs" / "public" / "about.md").write_text(
+                "Safe community self", encoding="utf-8"
+            )
+            persona = load_persona(root)
+            facts = FactStore(root / "facts.json", persona.facts_seed)
+            prompt = build_system_prompt(
+                persona,
+                facts,
+                include_private_context=False,
+                ambient_context="[Alex] Public room message",
+            )
+
+        self.assertIn("Safe community self", prompt)
+        self.assertIn("Public room message", prompt)
+        self.assertNotIn("Identity", prompt)
+        self.assertNotIn("Shared", prompt)
+        self.assertNotIn("Voice", prompt)
 
 
 if __name__ == "__main__":

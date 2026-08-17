@@ -84,14 +84,58 @@ from other rooms plus relationship-scoped durable recall.
 
 Legacy history and memory records have no trustworthy owner. They still load
 and remain available only in their original channel; they are never silently
-promoted into cross-surface continuity. When `PARTNER_USER_ID` is configured,
-Discord cognition and control commands are partner-only. The application also
-has a minimal defensive guest prompt with no private identity, partner facts,
-recall, cross-room recents, relationship docs, presence docs, journal context,
-or journal tools, but Discord does not route guest messages to it yet.
-Selective participation and an explicit public persona surface belong to the
-later social phase. Active channels currently answer each ordinary message
-from the configured partner, so use them only for private or low-traffic rooms.
+promoted into cross-surface continuity.
+
+Channel modes are explicit:
+
+| Configuration | Behavior |
+|---|---|
+| `WATCH_CHANNEL_ID`, `ACTIVE_CHANNEL_IDS` | Private partner rooms; ordinary partner messages receive replies |
+| `SOCIAL_CHANNEL_IDS` | Public projection; direct address works, optional local ambient attention may join |
+| `ADDRESSED_CHANNEL_IDS` | Public projection; mention, reply, or clear name-address only |
+| `IGNORED_CHANNEL_IDS` | No response |
+| Unlisted server channel | Addressed behavior |
+
+A channel ID may appear in only one mode. DMs from the configured partner are
+private. Public turns never receive private identity, facts, recall, cross-room
+recents, relationship docs, presence docs, journal context, journal tools, or
+private/legacy channel history. Joined public exchanges retain a bounded local
+history but are never compressed into durable guest memory.
+
+Create one or more `.md` files under `docs/public/` for the companion's explicit
+shared-room self. Private identity and always-on documents are not assumed safe
+for community use. If no public layer exists, addressed turns use only the
+minimal defensive guest prompt and ambient attention stays disabled.
+
+Social ambient processing is off by default. With
+`SOCIAL_AMBIENT_ENABLED=true`, the host requires loopback Ollama, confirms the
+configured local attention model exists, and successfully posts a public
+notice before retaining or processing ambient text in that channel. The local
+gate sees only bounded human text—never attachments, bot messages, DMs, or
+private rooms—and returns `speak`, `wait`, or `ignore`. The RAM-only buffer is
+not history or durable memory. When the gate chooses `speak`, a bounded public
+excerpt reaches `MODEL_SOCIAL`, which defaults to the canonical primary model.
+Notice failure, local-model failure, stale bursts, cooldown, or depleted
+discretionary budget all fail closed to silence. Mentions and replies remain
+available.
+
+Before enabling a social channel, verify the local model without Discord:
+
+```bash
+ollama pull qwen3:1.7b
+python -m disco_proxy_soul.adapters.ollama_attention
+```
+
+The probe runs three small `ignore`, `wait`, and `speak` examples and reports
+the local decision, confidence, tokens, and model duration.
+
+The discretionary budget refills gradually. As it drains, the confidence
+threshold and cooldown rise; when empty, the room becomes addressed-only rather
+than muting the companion entirely. `/social-status` reports local gate calls,
+decisions, cancellations, tokens, latency, suppressions, and current balance.
+Direct public summons use a separate per-user replenishing allowance. Sustained
+mention spam receives an hourglass reaction without invoking cognition; private
+partner rooms do not consume that allowance.
 
 Cross-room recents default to twelve messages, 4,000 characters, and two hours.
 Tune those ceilings with `CROSS_SURFACE_RECENT_MESSAGES`,
@@ -113,6 +157,8 @@ personas/example/
   facts.seed.json      # durable facts about you (copied into data/ on first run)
   docs/
     shared-context.md  # listed as always-on in the manifest
+    public/
+      community.md     # explicit public/shared-room projection
 ```
 
 Older names `persona.md` and `persona.json` still work.
@@ -127,6 +173,7 @@ Drop a `.md` file, then `/reload-docs` (or restart). Two equivalent hooks:
 |---|---|
 | `docs/always/` | Always in the prompt |
 | `docs/presence/` | Loaded only while `/presence` is on |
+| `docs/public/` | Used only for public addressed/social Discord turns |
 | `docs/` (loose file) | Library. Listed in `/docs`, not sent to the model |
 
 **Or the manifest**, if you would rather leave the file where it is:

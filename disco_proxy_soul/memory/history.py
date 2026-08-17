@@ -111,6 +111,16 @@ class ConversationStore:
         self._messages[channel_id] = []
         self.persist()
 
+    def trim(self, channel_id: str, max_messages: int) -> None:
+        messages = self._messages.get(channel_id, [])
+        if max_messages <= 0:
+            self._messages[channel_id] = []
+        elif len(messages) > max_messages:
+            self._messages[channel_id] = messages[-max_messages:]
+        else:
+            return
+        self.persist()
+
     def drop_exchange(self, channel_id: str, assistant_text: str) -> bool:
         history = self._messages.get(channel_id, [])
         for index, entry in enumerate(history):

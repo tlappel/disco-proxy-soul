@@ -46,6 +46,7 @@ class TurnProvenance:
     trigger: str | None = None
     source_id: str | None = None
     continuity_id: str | None = None
+    disclosure_scope: str = "private"
 
     def for_assistant(self, persona_id: str, companion_name: str) -> "TurnProvenance":
         return replace(
@@ -66,6 +67,7 @@ class TurnProvenance:
             "trigger": self.trigger,
             "source_id": self.source_id,
             "continuity_id": self.continuity_id,
+            "disclosure_scope": self.disclosure_scope,
         }
         return {key: value for key, value in values.items() if value not in (None, "")}
 
@@ -84,6 +86,7 @@ class TurnProvenance:
             trigger=_optional_text(data.get("trigger")),
             source_id=_optional_text(data.get("source_id")),
             continuity_id=_optional_text(data.get("continuity_id")),
+            disclosure_scope=str(data.get("disclosure_scope") or "private"),
         )
 
 

@@ -69,6 +69,18 @@ def _discord_ids(name: str, raw: str | None) -> tuple[int, ...]:
     return tuple(values)
 
 
+def _validate_channel_modes(groups: dict[str, tuple[int, ...]]) -> None:
+    owners: dict[int, str] = {}
+    for name, channel_ids in groups.items():
+        for channel_id in channel_ids:
+            prior = owners.get(channel_id)
+            if prior is not None:
+                raise ValueError(
+                    f"Discord channel {channel_id} appears in both {prior} and {name}"
+                )
+            owners[channel_id] = name
+
+
 def parse_model_ref(raw: str, default_provider: str) -> tuple[str, str]:
     """Split 'provider:model' or bare 'model' into (provider, model)."""
     text = (raw or "").strip()
@@ -141,6 +153,28 @@ class RuntimeConfig:
     cross_surface_recent_messages: int = 12
     cross_surface_recent_chars: int = 4000
     cross_surface_recent_minutes: int = 120
+    social_model: str = ""
+    social_channel_ids: tuple[int, ...] = ()
+    addressed_channel_ids: tuple[int, ...] = ()
+    ignored_channel_ids: tuple[int, ...] = ()
+    social_debounce_seconds: float = 3.0
+    social_buffer_messages: int = 12
+    social_buffer_chars: int = 4000
+    social_attention_threshold: float = 0.82
+    social_engagement_seconds: float = 120.0
+    social_cooldown_seconds: float = 30.0
+    social_budget_capacity: float = 6.0
+    social_budget_refill_per_hour: float = 2.0
+    social_history_messages: int = 24
+    social_response_max_tokens: int = 600
+    social_ambient_enabled: bool = False
+    social_attention_model: str = "qwen3:1.7b"
+    social_attention_timeout_seconds: float = 15.0
+    social_attention_threads: int = 4
+    social_attention_context_tokens: int = 2048
+    ollama_base_url: str = "http://127.0.0.1:11434"
+    social_direct_burst: int = 3
+    social_direct_refill_per_minute: float = 2.0
 
     @property
     def automatic_response_channel_ids(self) -> frozenset[int]:
@@ -159,6 +193,15 @@ class RuntimeConfig:
         if candidate != self.partner_user_id:
             return None
         return f"discord-user:{candidate}"
+
+    def channel_mode(self, channel_id: int) -> str:
+        if channel_id in self.ignored_channel_ids:
+            return "ignored"
+        if channel_id in self.social_channel_ids:
+            return "social"
+        if channel_id in self.automatic_response_channel_ids:
+            return "private"
+        return "addressed"
 
     @classmethod
     def from_env(cls) -> "RuntimeConfig":
@@ -186,12 +229,39 @@ class RuntimeConfig:
         else:
             primary_default = "grok-4.6"
             cheap_default = "grok-4.3"
+        active_channel_ids = _discord_ids(
+            "ACTIVE_CHANNEL_IDS", os.getenv("ACTIVE_CHANNEL_IDS")
+        )
+        social_channel_ids = _discord_ids(
+            "SOCIAL_CHANNEL_IDS", os.getenv("SOCIAL_CHANNEL_IDS")
+        )
+        addressed_channel_ids = _discord_ids(
+            "ADDRESSED_CHANNEL_IDS", os.getenv("ADDRESSED_CHANNEL_IDS")
+        )
+        ignored_channel_ids = _discord_ids(
+            "IGNORED_CHANNEL_IDS", os.getenv("IGNORED_CHANNEL_IDS")
+        )
+        watch_channel_id = int(os.getenv("WATCH_CHANNEL_ID", "0") or 0)
+        private_channel_ids = tuple(
+            dict.fromkeys(
+                ([watch_channel_id] if watch_channel_id else [])
+                + list(active_channel_ids)
+            )
+        )
+        _validate_channel_modes(
+            {
+                "private channels": private_channel_ids,
+                "SOCIAL_CHANNEL_IDS": social_channel_ids,
+                "ADDRESSED_CHANNEL_IDS": addressed_channel_ids,
+                "IGNORED_CHANNEL_IDS": ignored_channel_ids,
+            }
+        )
         return cls(
             discord_token=os.getenv("DISCORD_TOKEN", "").strip(),
             data_dir=Path(os.getenv("DATA_DIR", "data")),
             persona_id=persona_id,
             persona_dir=persona_dir,
-            watch_channel_id=int(os.getenv("WATCH_CHANNEL_ID", "0") or 0),
+            watch_channel_id=watch_channel_id,
             timezone=os.getenv("COMPANION_TZ") or os.getenv("LILA_TZ") or "America/Chicago",
             default_provider=default_provider,
             primary_model=os.getenv("MODEL_PRIMARY", primary_default),
@@ -340,9 +410,7 @@ class RuntimeConfig:
                 40,
                 2_000,
             ),
-            active_channel_ids=_discord_ids(
-                "ACTIVE_CHANNEL_IDS", os.getenv("ACTIVE_CHANNEL_IDS")
-            ),
+            active_channel_ids=active_channel_ids,
             partner_user_id=_bounded_int(
                 "PARTNER_USER_ID",
                 os.getenv("PARTNER_USER_ID"),
@@ -371,6 +439,124 @@ class RuntimeConfig:
                 1,
                 1440,
             ),
+            social_model=(os.getenv("MODEL_SOCIAL") or primary_default).strip(),
+            social_channel_ids=social_channel_ids,
+            addressed_channel_ids=addressed_channel_ids,
+            ignored_channel_ids=ignored_channel_ids,
+            social_debounce_seconds=_bounded_float(
+                "SOCIAL_DEBOUNCE_SECONDS",
+                os.getenv("SOCIAL_DEBOUNCE_SECONDS"),
+                3.0,
+                0.1,
+                30.0,
+            ),
+            social_buffer_messages=_bounded_int(
+                "SOCIAL_BUFFER_MESSAGES",
+                os.getenv("SOCIAL_BUFFER_MESSAGES"),
+                12,
+                2,
+                50,
+            ),
+            social_buffer_chars=_bounded_int(
+                "SOCIAL_BUFFER_CHARS",
+                os.getenv("SOCIAL_BUFFER_CHARS"),
+                4_000,
+                200,
+                20_000,
+            ),
+            social_attention_threshold=_bounded_float(
+                "SOCIAL_ATTENTION_THRESHOLD",
+                os.getenv("SOCIAL_ATTENTION_THRESHOLD"),
+                0.82,
+                0.5,
+                0.99,
+            ),
+            social_engagement_seconds=_bounded_float(
+                "SOCIAL_ENGAGEMENT_SECONDS",
+                os.getenv("SOCIAL_ENGAGEMENT_SECONDS"),
+                120.0,
+                5.0,
+                1800.0,
+            ),
+            social_cooldown_seconds=_bounded_float(
+                "SOCIAL_COOLDOWN_SECONDS",
+                os.getenv("SOCIAL_COOLDOWN_SECONDS"),
+                30.0,
+                1.0,
+                3600.0,
+            ),
+            social_budget_capacity=_bounded_float(
+                "SOCIAL_BUDGET_CAPACITY",
+                os.getenv("SOCIAL_BUDGET_CAPACITY"),
+                6.0,
+                1.0,
+                100.0,
+            ),
+            social_budget_refill_per_hour=_bounded_float(
+                "SOCIAL_BUDGET_REFILL_PER_HOUR",
+                os.getenv("SOCIAL_BUDGET_REFILL_PER_HOUR"),
+                2.0,
+                0.1,
+                100.0,
+            ),
+            social_history_messages=_bounded_int(
+                "SOCIAL_HISTORY_MESSAGES",
+                os.getenv("SOCIAL_HISTORY_MESSAGES"),
+                24,
+                2,
+                100,
+            ),
+            social_response_max_tokens=_bounded_int(
+                "SOCIAL_RESPONSE_MAX_TOKENS",
+                os.getenv("SOCIAL_RESPONSE_MAX_TOKENS"),
+                600,
+                64,
+                4000,
+            ),
+            social_ambient_enabled=_as_bool(
+                os.getenv("SOCIAL_AMBIENT_ENABLED"), False
+            ),
+            social_attention_model=os.getenv(
+                "SOCIAL_ATTENTION_MODEL", "qwen3:1.7b"
+            ).strip(),
+            social_attention_timeout_seconds=_bounded_float(
+                "SOCIAL_ATTENTION_TIMEOUT_SECONDS",
+                os.getenv("SOCIAL_ATTENTION_TIMEOUT_SECONDS"),
+                15.0,
+                1.0,
+                120.0,
+            ),
+            social_attention_threads=_bounded_int(
+                "SOCIAL_ATTENTION_THREADS",
+                os.getenv("SOCIAL_ATTENTION_THREADS"),
+                4,
+                1,
+                32,
+            ),
+            social_attention_context_tokens=_bounded_int(
+                "SOCIAL_ATTENTION_CONTEXT_TOKENS",
+                os.getenv("SOCIAL_ATTENTION_CONTEXT_TOKENS"),
+                2048,
+                512,
+                8192,
+            ),
+            ollama_base_url=os.getenv(
+                "OLLAMA_BASE_URL", "http://127.0.0.1:11434"
+            ).strip(),
+            social_direct_burst=_bounded_int(
+                "SOCIAL_DIRECT_BURST",
+                os.getenv("SOCIAL_DIRECT_BURST"),
+                3,
+                1,
+                20,
+            ),
+            social_direct_refill_per_minute=_bounded_float(
+                "SOCIAL_DIRECT_REFILL_PER_MINUTE",
+                os.getenv("SOCIAL_DIRECT_REFILL_PER_MINUTE"),
+                2.0,
+                0.1,
+                60.0,
+            ),
         )
 
     def require_discord(self) -> None:
@@ -382,3 +568,8 @@ class RuntimeConfig:
 
     def cheap_ref(self) -> tuple[str, str]:
         return parse_model_ref(self.cheap_model, self.default_provider)
+
+    def social_ref(self) -> tuple[str, str]:
+        return parse_model_ref(
+            self.social_model or self.cheap_model, self.default_provider
+        )

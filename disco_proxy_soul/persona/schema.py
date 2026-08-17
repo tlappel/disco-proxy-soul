@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-DOC_MODES = ("always_on", "presence", "author")
+DOC_MODES = ("always_on", "presence", "public", "author")
 
 CARD_FIELD_ORDER = (
     "age",

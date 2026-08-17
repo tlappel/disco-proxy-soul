@@ -31,6 +31,7 @@ FOLDER_MODES = {
     "always": "always_on",
     "always_on": "always_on",
     "presence": "presence",
+    "public": "public",
     "author": "author",
     "docs": "author",
 }
