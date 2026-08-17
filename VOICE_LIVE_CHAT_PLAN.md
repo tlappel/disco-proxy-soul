@@ -502,7 +502,7 @@ while STT and the speech path remain comparatively fast.
 - Do not use the extension's approximate speaking-stop event as the only turn
   boundary.
 
-## Phase 5D — cross-surface continuity scope (implementation checkpoint)
+## Phase 5D — cross-surface continuity scope (accepted 2026-08-16)
 
 Separate conversation location from continuity identity. Keep recent working
 history local to its Discord channel, but allow relevant memory to be recalled
@@ -536,7 +536,21 @@ watch channel into an explicit partner active-channel allowlist; it does not
 yet make shared-room participation selective. Automated isolation, duplicate,
 concurrency, legacy, routing, age-bound, guest-prompt, and voice-provenance
 regressions are in place. The complete automated suite passes `228/228`; live
-cross-surface acceptance remains.
+cross-surface acceptance passed in both directions.
+
+For voice → text, Travis said, "The brass compass belongs on the kitchen
+windowsill" in live voice, stopped the session, and asked the text room where
+he had said it belonged. Naomi answered "The kitchen windowsill" without the
+answer appearing in the text question. For text → voice, Travis placed a silver
+train ticket inside a red cookbook in text, then asked live voice where it was.
+Naomi answered, "Inside the red cookbook. You told me that, it stayed."
+
+Each voice leg produced one final, one accepted turn, one text response, and
+one spoken response. Both stopped normally with zero receive-thread drops,
+zero event-loop drops, zero late samples, zero reconnect failures, and zero
+ambiguous frames. The first run reported 47 clock repairs and the second 21;
+each also survived one isolated corrupt Discord frame through the existing
+guard. The normal, non-accelerated bot remained online after acceptance.
 
 ## Phase 5E — selective social text presence
 
