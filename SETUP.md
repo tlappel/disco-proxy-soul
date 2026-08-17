@@ -77,13 +77,14 @@ running yet.
 Using Claude instead? https://console.anthropic.com → API keys. In step 7 you
 will put that value in `ANTHROPIC_API_KEY` instead of `XAI_API_KEY`.
 
-## Step 6 — Copy a channel ID (optional but useful)
+## Step 6 — Copy your user ID and a channel ID
 
 This makes the companion watch one channel and talk there without being
 @mentioned.
 
 1. In Discord: **User Settings → Advanced → Developer Mode** ON
-2. Right-click the channel → **Copy Channel ID**
+2. Right-click your own name → **Copy User ID**
+3. Right-click the channel → **Copy Channel ID**
 
 If you skip this, they still answer DMs, @mentions, and replies.
 
@@ -100,7 +101,22 @@ If you skip this, they still answer DMs, @mentions, and replies.
 DISCORD_TOKEN=paste-the-bot-token-from-step-3
 XAI_API_KEY=paste-the-key-from-step-5
 WATCH_CHANNEL_ID=paste-the-channel-id-from-step-6
+PARTNER_USER_ID=paste-your-user-id-from-step-6
 ```
+
+`PARTNER_USER_ID` is what safely links your text, DM, and live-voice
+continuity. Without it, existing channel-local behavior remains in place and
+no cross-channel history or memory is inferred. To make additional private or
+low-traffic channels active without requiring a mention, add their IDs as a
+comma-separated list:
+
+```env
+ACTIVE_CHANNEL_IDS=first-channel-id,second-channel-id
+```
+
+The original watch channel remains the destination for outreach. Active
+channels currently answer every ordinary human message; selective social-room
+participation is a later feature.
 
 Leave `PERSONA_ID=example` and `PERSONA_DIR=personas/example` for the first
 run. You will change those when you add your own persona (step 8).

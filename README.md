@@ -51,6 +51,8 @@ XAI_API_KEY=...          # or ANTHROPIC_API_KEY / OPENAI_API_KEY
 PERSONA_ID=example
 PERSONA_DIR=personas/example
 WATCH_CHANNEL_ID=        # optional; without it, DMs / mentions / replies only
+PARTNER_USER_ID=         # your stable Discord user ID; enables private continuity
+ACTIVE_CHANNEL_IDS=      # optional comma-separated additional active channels
 ```
 
 Then:
@@ -64,6 +66,36 @@ that `.env`, plus `PERSONA_DIR` / `DATA_DIR`. Do not commit a private
 `companion-private/` tree; it is gitignored if you keep one here.
 
 Do not run two processes with the same Discord token.
+
+### Channels and cross-surface continuity
+
+`WATCH_CHANNEL_ID` remains the outreach destination and an active channel.
+`ACTIVE_CHANNEL_IDS` adds other deliberately selected channels where ordinary
+human messages can receive a reply without a mention. DMs, mentions, and direct
+replies continue to work elsewhere. This is an application policy layered on
+top of Discord's normal View Channel and Send Messages permissions.
+
+Set `PARTNER_USER_ID` to the stable Discord ID of the person allowed to carry
+private continuity between text, DM, and live voice. New rolling-history turns
+store timestamp, guild, channel, surface, stable author, trigger, and source
+correlation provenance. The current channel keeps its full rolling history;
+the configured partner also receives a bounded, labeled view of recent turns
+from other rooms plus relationship-scoped durable recall.
+
+Legacy history and memory records have no trustworthy owner. They still load
+and remain available only in their original channel; they are never silently
+promoted into cross-surface continuity. When `PARTNER_USER_ID` is configured,
+Discord cognition and control commands are partner-only. The application also
+has a minimal defensive guest prompt with no private identity, partner facts,
+recall, cross-room recents, relationship docs, presence docs, journal context,
+or journal tools, but Discord does not route guest messages to it yet.
+Selective participation and an explicit public persona surface belong to the
+later social phase. Active channels currently answer each ordinary message
+from the configured partner, so use them only for private or low-traffic rooms.
+
+Cross-room recents default to twelve messages, 4,000 characters, and two hours.
+Tune those ceilings with `CROSS_SURFACE_RECENT_MESSAGES`,
+`CROSS_SURFACE_RECENT_CHARS`, and `CROSS_SURFACE_RECENT_MINUTES`.
 
 ## Persona packages
 

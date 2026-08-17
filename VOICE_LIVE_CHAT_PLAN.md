@@ -502,7 +502,7 @@ while STT and the speech path remain comparatively fast.
 - Do not use the extension's approximate speaking-stop event as the only turn
   boundary.
 
-## Phase 5D — cross-surface continuity scope
+## Phase 5D — cross-surface continuity scope (implementation checkpoint)
 
 Separate conversation location from continuity identity. Keep recent working
 history local to its Discord channel, but allow relevant memory to be recalled
@@ -514,6 +514,48 @@ Verify that a memory formed in voice can be recalled from text and vice versa,
 while unrelated users and scopes remain excluded. Existing unscoped records
 must remain local unless an explicit, reviewable migration assigns ownership;
 do not infer that every record in a backing file belongs to the same person.
+
+Implementation now records provenance on new text, slash-command, reaction,
+and accepted voice turns: UTC timestamp, guild, channel, surface, stable author,
+trigger, and source correlation. `PARTNER_USER_ID` explicitly owns the private
+companion-human continuity; no ID is inferred from old backing files.
+
+Current-room history remains full fidelity. Other linked rooms contribute only
+a bounded, age-limited, provenance-labeled recent view. Durable memories formed
+from uniformly owned history are stored under the relationship continuity key.
+In the original channel, recall also considers legacy channel-local records;
+those records never cross into another room without a later explicit migration.
+
+Once `PARTNER_USER_ID` is configured, Discord cognition and commands are
+partner-only until Phase 5E defines an explicit public persona surface and
+selective participation policy. Defense-in-depth application calls for an
+unrecognized user receive a minimal guest prompt with no private identity,
+partner facts, recall, cross-room recents, relationship docs, presence docs,
+journal context, or journal tools. `ACTIVE_CHANNEL_IDS` extends the legacy
+watch channel into an explicit partner active-channel allowlist; it does not
+yet make shared-room participation selective. Automated isolation, duplicate,
+concurrency, legacy, routing, age-bound, guest-prompt, and voice-provenance
+regressions are in place. The complete automated suite passes `228/228`; live
+cross-surface acceptance remains.
+
+## Phase 5E — selective social text presence
+
+Add an opt-in social channel mode on top of Phase 5D's identity boundary. Keep
+a short provenance-rich ambient buffer in memory, not durable companion
+history. Always accept mentions, replies, and clear name-addressing; maintain a
+short engagement lease for a conversation Naomi has joined; then use the cheap
+model only for ambiguous invitations. Debounce bursts, give humans the first
+chance to answer, apply cooldowns, ignore bot-authored messages, and default to
+silence when uncertain.
+
+Define an explicit public persona projection for guest turns; do not assume
+private identity, room, character, or always-on documents are safe merely
+because durable memory is scoped correctly.
+
+Ambient messages do not become Naomi's conversation history or durable memory
+merely because she could see them. Guest exchanges stay local and cannot access
+the private partner continuity. Tune the participation policy live before
+allowing unsolicited entry into ordinary human conversation.
 
 ## Phase 6 — multi-speaker voice (deferred product decision)
 

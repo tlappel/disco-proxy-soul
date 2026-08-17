@@ -12,7 +12,8 @@ Those belong to the Discord window (ConversationStore), not identity.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from typing import Protocol, Sequence
 
 
@@ -20,6 +21,76 @@ from typing import Protocol, Sequence
 class Scope:
     channel_id: str
     persona_id: str
+    continuity_id: str | None = None
+
+    @property
+    def storage_key(self) -> str:
+        if self.continuity_id:
+            return f"continuity:{self.continuity_id}"
+        return self.channel_id
+
+
+@dataclass(frozen=True)
+class TurnProvenance:
+    """Where a stored turn came from and which continuity may use it."""
+
+    channel_id: str
+    timestamp: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+    guild_id: str | None = None
+    channel_name: str | None = None
+    surface: str = "text"
+    author_id: str | None = None
+    author_name: str | None = None
+    trigger: str | None = None
+    source_id: str | None = None
+    continuity_id: str | None = None
+
+    def for_assistant(self, persona_id: str, companion_name: str) -> "TurnProvenance":
+        return replace(
+            self,
+            author_id=f"companion:{persona_id}",
+            author_name=companion_name,
+        )
+
+    def to_dict(self) -> dict[str, str]:
+        values = {
+            "timestamp": self.timestamp,
+            "guild_id": self.guild_id,
+            "channel_id": self.channel_id,
+            "channel_name": self.channel_name,
+            "surface": self.surface,
+            "author_id": self.author_id,
+            "author_name": self.author_name,
+            "trigger": self.trigger,
+            "source_id": self.source_id,
+            "continuity_id": self.continuity_id,
+        }
+        return {key: value for key, value in values.items() if value not in (None, "")}
+
+    @classmethod
+    def from_dict(cls, data: object) -> "TurnProvenance | None":
+        if not isinstance(data, dict) or not data.get("channel_id"):
+            return None
+        return cls(
+            timestamp=str(data.get("timestamp") or ""),
+            guild_id=_optional_text(data.get("guild_id")),
+            channel_id=str(data["channel_id"]),
+            channel_name=_optional_text(data.get("channel_name")),
+            surface=str(data.get("surface") or "text"),
+            author_id=_optional_text(data.get("author_id")),
+            author_name=_optional_text(data.get("author_name")),
+            trigger=_optional_text(data.get("trigger")),
+            source_id=_optional_text(data.get("source_id")),
+            continuity_id=_optional_text(data.get("continuity_id")),
+        )
+
+
+def _optional_text(value: object) -> str | None:
+    if value in (None, ""):
+        return None
+    return str(value)
 
 
 @dataclass(frozen=True)

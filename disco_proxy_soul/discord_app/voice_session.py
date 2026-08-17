@@ -16,6 +16,7 @@ from enum import Enum
 import logging
 import math
 import re
+import uuid
 from typing import Any, AsyncIterator, Awaitable, Callable, Protocol
 
 from discord.ext import voice_recv
@@ -34,6 +35,7 @@ from ..adapters.elevenlabs_tts import (
     ElevenLabsTTSConfig,
 )
 from ..config import RuntimeConfig
+from ..memory.contracts import TurnProvenance
 from .voice_capture import CaptureSummary, WaveCaptureSession
 from .voice_compat import install_voice_receive_compatibility
 from .voice_sink import DiagnosticWaveSink, LivePCMFrame, LivePCMSink
@@ -467,6 +469,7 @@ class _Companion(Protocol):
         user_text: str,
         *,
         interaction_mode: str | None = None,
+        provenance: TurnProvenance | None = None,
     ) -> str: ...
 
 
@@ -725,6 +728,8 @@ class VoiceSession:
         self.config = config
         self.app = app
         self.conversation_key = str(voice_channel.id)
+        self._provenance_session_id = uuid.uuid4().hex
+        self._accepted_turn_sequence = 0
         self._conversation_lock = conversation_lock or asyncio.Lock()
         self.queue_capacity = max(1, math.ceil(config.voice_queue_seconds / FRAME_SECONDS))
         self.queue: asyncio.Queue[LivePCMFrame] = asyncio.Queue(self.queue_capacity)
@@ -1375,10 +1380,24 @@ class VoiceSession:
                     return
                 loop = asyncio.get_running_loop()
                 cognition_started = loop.time()
+                self._accepted_turn_sequence += 1
                 reply = await self.app.respond(
                     self.conversation_key,
                     f"[{self.starter_name}]: {text}",
                     interaction_mode="voice",
+                    provenance=TurnProvenance(
+                        guild_id=str(self.guild_id),
+                        channel_id=self.conversation_key,
+                        channel_name=getattr(self.voice_channel, "name", None),
+                        surface="voice",
+                        author_id=str(self.starter_user_id),
+                        author_name=self.starter_name,
+                        trigger="live-voice",
+                        source_id=(
+                            f"voice:{self._provenance_session_id}:"
+                            f"{self._accepted_turn_sequence}"
+                        ),
+                    ),
                 )
                 self.counters.cognition_latency.observe_seconds(
                     loop.time() - cognition_started

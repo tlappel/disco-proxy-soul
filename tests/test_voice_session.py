@@ -104,14 +104,18 @@ class FakeTextChannel:
 class FakeCompanion:
     def __init__(self, *, gate=None, reply="Naomi heard you.") -> None:
         self.calls: list[tuple[str, str, str | None]] = []
+        self.provenances = []
         self.history: list[tuple[str, str]] = []
         self.gate = gate
         self.entered = asyncio.Event() if gate is not None else None
         self.reply = reply
         self.persona = SimpleNamespace(companion_name="Naomi")
 
-    async def respond(self, channel_id, user_text, *, interaction_mode=None):
+    async def respond(
+        self, channel_id, user_text, *, interaction_mode=None, provenance=None
+    ):
         self.calls.append((channel_id, user_text, interaction_mode))
+        self.provenances.append(provenance)
         if self.entered is not None:
             self.entered.set()
             await self.gate.wait()
@@ -1134,6 +1138,11 @@ class VoiceSessionAsyncTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         self.assertEqual(app.calls, [("22", "[Travis]: This is Travis", "voice")])
+        self.assertEqual(app.provenances[0].surface, "voice")
+        self.assertEqual(app.provenances[0].author_id, "7")
+        self.assertEqual(app.provenances[0].channel_id, "22")
+        self.assertEqual(app.provenances[0].trigger, "live-voice")
+        self.assertTrue(app.provenances[0].source_id.startswith("voice:"))
         self.assertEqual(
             app.history,
             [

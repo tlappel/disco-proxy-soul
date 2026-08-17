@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -11,7 +11,7 @@ from typing import Sequence
 
 from .config import RuntimeConfig
 from .memory.archive import ArchiveStore
-from .memory.contracts import MemoryRecord, Scope
+from .memory.contracts import MemoryRecord, Scope, TurnProvenance
 from .memory.facts import FactStore
 from .memory.file_backend import FileMemoryBackend, record_to_dict
 from .memory.history import ConversationStore
@@ -108,8 +108,12 @@ class CompanionApp:
         app.moments_threshold = config.moments_threshold
         return app
 
-    def scope(self, channel_id: str) -> Scope:
-        return Scope(channel_id=channel_id, persona_id=self.persona.persona_id)
+    def scope(self, channel_id: str, author_id: int | str | None = None) -> Scope:
+        return Scope(
+            channel_id=channel_id,
+            persona_id=self.persona.persona_id,
+            continuity_id=self.config.continuity_id_for_user(author_id),
+        )
 
     def set_primary_model(self, model_ref: str) -> str:
         from .config import parse_model_ref
@@ -132,8 +136,32 @@ class CompanionApp:
         parts: Sequence[ContentPart] | None = None,
         recall_source: str = "automatic",
         interaction_mode: str | None = None,
+        provenance: TurnProvenance | None = None,
     ) -> str:
         text = sanitize_incoming_text(user_text)
+        continuity_id = None
+        if provenance is not None:
+            continuity_id = self.config.continuity_id_for_user(provenance.author_id)
+            if (
+                provenance.trigger == "outreach"
+                and provenance.author_id == f"system:{self.persona.persona_id}"
+            ):
+                continuity_id = self.config.continuity_id_for_user(
+                    self.config.partner_user_id
+                )
+            provenance = replace(
+                provenance,
+                channel_id=channel_id,
+                continuity_id=continuity_id,
+            )
+        scope = Scope(
+            channel_id=channel_id,
+            persona_id=self.persona.persona_id,
+            continuity_id=continuity_id,
+        )
+        include_private_context = (
+            not self.config.partner_user_id or scope.continuity_id is not None
+        )
         if parts:
             cleaned: list[ContentPart] = []
             for part in parts:
@@ -142,9 +170,14 @@ class CompanionApp:
                 else:
                     cleaned.append(part)
             parts = tuple(cleaned)
-        recalled = await self._maybe_recall(channel_id, text)
+        recalled = (
+            await self._maybe_recall(scope, text) if include_private_context else None
+        )
         if recall_source == "manual":
-            recalled = self._cached_recall.get(channel_id, recalled)
+            recalled = self._cached_recall.get(scope.storage_key, recalled)
+        cross_surface_recent = (
+            self._cross_surface_recent(scope) if include_private_context else ""
+        )
         system = build_system_prompt(
             self.persona,
             self.facts,
@@ -153,7 +186,9 @@ class CompanionApp:
             recall_query=text,
             presence=self.presence_loaded,
             interaction_mode=interaction_mode,
-            journal_excerpt=self.journal.read_tail(),
+            journal_excerpt=(self.journal.read_tail() if include_private_context else ""),
+            cross_surface_recent=cross_surface_recent,
+            include_private_context=include_private_context,
         )
         history = self.history.get(channel_id)
         messages = [
@@ -168,14 +203,23 @@ class CompanionApp:
             user_content = text
         messages.append(ModelMessage(role="user", content=user_content))
 
-        reply = await self._complete_with_tools(messages, system)
+        reply = await self._complete_with_tools(
+            messages, system, allow_journal_tools=include_private_context
+        )
         if not reply.strip():
             print("[api] empty reply after tool loop — nothing stored")
             return "That one got away from me mid-thought — say it again for me?"
 
-        self.history.append(channel_id, "user", text)
-        self.history.append(channel_id, "assistant", reply)
-        self._last_message_time[channel_id] = datetime.now()
+        self.history.append(channel_id, "user", text, provenance)
+        assistant_provenance = (
+            provenance.for_assistant(
+                self.persona.persona_id, self.persona.companion_name
+            )
+            if provenance is not None
+            else None
+        )
+        self.history.append(channel_id, "assistant", reply, assistant_provenance)
+        self._last_message_time[scope.storage_key] = datetime.now()
         self.outreach.note_activity()
 
         if len(self.history.get(channel_id)) >= self.config.max_recent:
@@ -218,8 +262,9 @@ class CompanionApp:
         messages: list[ModelMessage],
         system: str,
         max_rounds: int = 4,
+        allow_journal_tools: bool = True,
     ) -> str:
-        tools = self._journal_tools()
+        tools = self._journal_tools() if allow_journal_tools else ()
         for _ in range(max_rounds):
             response = await self.models.complete(
                 "primary",
@@ -269,11 +314,17 @@ class CompanionApp:
         self.journal.append(text.strip(), ["journal", "kept"])
         print("[journal] companion kept an entry")
 
-    async def recall_command(self, channel_id: str, query: str) -> list[MemoryRecord]:
-        records = await self.memory.recall(
-            self.scope(channel_id), query, limit=self.config.max_recalled
+    async def recall_command(
+        self,
+        channel_id: str,
+        query: str,
+        author_id: int | str | None = None,
+    ) -> list[MemoryRecord]:
+        scope = self.scope(channel_id, author_id)
+        records = await self._recall_with_local_legacy(
+            scope, query, limit=self.config.max_recalled
         )
-        self._cached_recall[channel_id] = records
+        self._cached_recall[scope.storage_key] = records
         return records
 
     async def compress(self, channel_id: str) -> None:
@@ -284,28 +335,97 @@ class CompanionApp:
             await self._compress_chunk(channel_id)
 
     async def _maybe_recall(
-        self, channel_id: str, text: str
+        self, scope: Scope, text: str
     ) -> list[MemoryRecord] | None:
         now = datetime.now()
-        last = self._last_message_time.get(channel_id)
+        cache_key = scope.storage_key
+        last = self._last_message_time.get(cache_key)
         gap = (now - last).total_seconds() / 60 if last else float("inf")
         if gap < self.config.recall_silence_min or not text:
-            return self._cached_recall.get(channel_id)
-        candidates = await self.memory.recall(
-            self.scope(channel_id),
+            return self._cached_recall.get(cache_key)
+        candidates = await self._recall_with_local_legacy(
+            scope,
             text,
             limit=self.config.recall_prefilter_limit,
         )
         if not candidates:
-            self._cached_recall.pop(channel_id, None)
+            self._cached_recall.pop(cache_key, None)
             return None
         picked = await self._pick_memories(text, candidates)
         if picked:
-            self._cached_recall[channel_id] = picked
+            self._cached_recall[cache_key] = picked
         else:
-            self._cached_recall.pop(channel_id, None)
+            self._cached_recall.pop(cache_key, None)
         print(f"[memory] Re-engagement recall after {gap:.0f}m silence")
         return picked or None
+
+    async def _recall_with_local_legacy(
+        self, scope: Scope, query: str, *, limit: int
+    ) -> list[MemoryRecord]:
+        records = await self.memory.recall(scope, query, limit=limit)
+        if not scope.continuity_id:
+            return records
+        local = await self.memory.recall(
+            Scope(channel_id=scope.channel_id, persona_id=scope.persona_id),
+            query,
+            limit=limit,
+        )
+        merged: list[MemoryRecord] = []
+        seen: set[str] = set()
+        for record in [*records, *local]:
+            key = record.memory_id or f"{record.timestamp}:{record.summary}"
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(record)
+        return merged[:limit]
+
+    def _cross_surface_recent(self, scope: Scope) -> str:
+        if not scope.continuity_id:
+            return ""
+        entries = self.history.recent_for_continuity(
+            scope.continuity_id,
+            exclude_channel_id=scope.channel_id,
+            limit=self.config.cross_surface_recent_messages,
+            max_chars=self.config.cross_surface_recent_chars,
+            max_age_minutes=self.config.cross_surface_recent_minutes,
+        )
+        rendered: list[str] = []
+        for entry in entries:
+            provenance = TurnProvenance.from_dict(entry.get("provenance"))
+            if provenance is None:
+                continue
+            if provenance.surface == "outreach" and entry.get("role") == "user":
+                continue
+            room = provenance.channel_name or provenance.channel_id
+            speaker = provenance.author_name or entry.get("role", "speaker")
+            content = entry.get("content")
+            if not isinstance(content, str):
+                content = "[media]"
+            rendered.append(
+                f"[{provenance.surface} | {room} | {speaker}] {content}"
+            )
+        return "\n".join(rendered)
+
+    async def list_memories(
+        self, channel_id: str, author_id: int | str | None = None
+    ) -> list[MemoryRecord]:
+        scope = self.scope(channel_id, author_id)
+        records = await self.memory.list(scope)
+        if not scope.continuity_id:
+            return records
+        local = await self.memory.list(
+            Scope(channel_id=channel_id, persona_id=self.persona.persona_id)
+        )
+        merged: list[MemoryRecord] = []
+        seen: set[str] = set()
+        for record in [*records, *local]:
+            key = record.memory_id or f"{record.timestamp}:{record.summary}"
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(record)
+        return merged
 
     async def _pick_memories(
         self, query: str, candidates: list[MemoryRecord]
@@ -354,9 +474,17 @@ class CompanionApp:
         partner = self.persona.partner_name
         companion = self.persona.companion_name
         convo = "\n".join(
-            f"{partner if item['role'] == 'user' else companion}: "
+            f"{self._history_speaker(item, partner, companion)}: "
             f"{item['content'] if isinstance(item['content'], str) else '[media]'}"
             for item in chunk
+        )
+        continuity_id, memory_metadata = self._chunk_memory_ownership(
+            channel_id, chunk
+        )
+        memory_scope = Scope(
+            channel_id=channel_id,
+            persona_id=self.persona.persona_id,
+            continuity_id=continuity_id,
         )
         prompt = f"""Compress this conversation excerpt into a memory summary for {companion}.
 
@@ -394,11 +522,12 @@ Return ONLY valid JSON:
 
             data = normalize_memory_data(parse_llm_json(response.text), convo[:200])
             record = await self.memory.save(
-                self.scope(channel_id),
+                memory_scope,
                 MemoryRecord(
                     summary=data["summary"],
                     tags=tuple(data["tags"]),
                     significance=data["significance"],
+                    metadata=memory_metadata,
                 ),
             )
             self.history.replace(channel_id, history[len(chunk):])
@@ -406,11 +535,49 @@ Return ONLY valid JSON:
                 f"[memory] Compressed {len(chunk)} messages "
                 f"(sig={record.significance:.1f})"
             )
-            if record.significance >= self.moments_threshold:
+            partner_owned = not self.config.partner_user_id or continuity_id is not None
+            if partner_owned and record.significance >= self.moments_threshold:
                 self.moments.append(record.summary, list(record.tags))
-            asyncio.create_task(self._maybe_update_facts(convo))
+            if partner_owned:
+                asyncio.create_task(self._maybe_update_facts(convo))
         except Exception as exc:
             print(f"[memory] Compression error: {exc}")
+
+    @staticmethod
+    def _history_speaker(
+        item: dict[str, object], partner: str, companion: str
+    ) -> str:
+        provenance = TurnProvenance.from_dict(item.get("provenance"))
+        if provenance is not None and provenance.author_name:
+            return provenance.author_name
+        return partner if item.get("role") == "user" else companion
+
+    def _chunk_memory_ownership(
+        self, channel_id: str, chunk: list[dict[str, object]]
+    ) -> tuple[str | None, dict[str, str]]:
+        provenances = [
+            TurnProvenance.from_dict(item.get("provenance")) for item in chunk
+        ]
+        continuity_ids = {
+            item.continuity_id for item in provenances if item is not None
+        }
+        continuity_id = None
+        if (
+            provenances
+            and all(item is not None for item in provenances)
+            and len(continuity_ids) == 1
+            and None not in continuity_ids
+        ):
+            continuity_id = next(iter(continuity_ids))
+        metadata = {"source_channel_id": channel_id}
+        if continuity_id:
+            metadata["continuity_id"] = continuity_id
+        surfaces = sorted(
+            {item.surface for item in provenances if item is not None and item.surface}
+        )
+        if surfaces:
+            metadata["source_surfaces"] = ",".join(surfaces)
+        return continuity_id, metadata
 
     async def _maybe_update_facts(self, conversation_text: str) -> None:
         partner = self.persona.partner_name
@@ -447,12 +614,24 @@ Return ONLY valid JSON, nothing else."""
         except Exception as exc:
             print(f"[memory] Facts update error: {exc}")
 
-    async def _keep_memory(self, channel_id: str, record: MemoryRecord) -> MemoryRecord:
-        saved = await self.memory.save(self.scope(channel_id), record)
+    async def _keep_memory(
+        self,
+        channel_id: str,
+        record: MemoryRecord,
+        author_id: int | str | None = None,
+    ) -> MemoryRecord:
+        scope = self.scope(channel_id, author_id)
+        metadata = dict(record.metadata)
+        metadata.setdefault("source_channel_id", channel_id)
+        if scope.continuity_id:
+            metadata.setdefault("continuity_id", scope.continuity_id)
+        saved = await self.memory.save(scope, replace(record, metadata=metadata))
         self.archive.append(channel_id, record_to_dict(saved))
         return saved
 
-    async def keep_moment(self, channel_id: str, text: str) -> None:
+    async def keep_moment(
+        self, channel_id: str, text: str, author_id: int | str | None = None
+    ) -> None:
         partner = self.persona.partner_name
         record = await self._keep_memory(
             channel_id,
@@ -461,12 +640,18 @@ Return ONLY valid JSON, nothing else."""
                 tags=("moment", "kept"),
                 significance=1.0,
             ),
+            author_id,
         )
         self.moments.append(f"💛 {partner} kept this moment: {text}", ["moment", "kept"])
         print(f"[memory] moment saved {record.memory_id}")
 
     async def pin_exchange(
-        self, channel_id: str, channel_name: str, user_text: str, reply: str
+        self,
+        channel_id: str,
+        channel_name: str,
+        user_text: str,
+        reply: str,
+        author_id: int | str | None = None,
     ) -> None:
         self.saved.append(
             channel_name,
@@ -486,6 +671,7 @@ Return ONLY valid JSON, nothing else."""
                 tags=("pinned",),
                 significance=1.0,
             ),
+            author_id,
         )
 
     def forget_exchange(self, channel_id: str, assistant_text: str) -> bool:
@@ -509,9 +695,12 @@ Return ONLY valid JSON, nothing else."""
         partner = self.persona.partner_name
         companion = self.persona.companion_name
         convo = "\n".join(
-            f"{partner if item['role'] == 'user' else companion}: "
+            f"{self._history_speaker(item, partner, companion)}: "
             f"{item['content'] if isinstance(item['content'], str) else '[media]'}"
             for item in history
+        )
+        continuity_id, memory_metadata = self._chunk_memory_ownership(
+            channel_id, history
         )
         prompt = f"""Compress this entire conversation into a dense session brief for {companion}.
 You ARE {companion} — write this as notes to yourself about what just happened.
@@ -539,17 +728,42 @@ Return ONLY the session brief text, no JSON, no formatting — just the notes.""
             {"summary": brief, "tags": ["prune"], "significance": 0.7},
             brief,
         )
-        record = await self._keep_memory(
-            channel_id,
+        record = await self.memory.save(
+            Scope(
+                channel_id=channel_id,
+                persona_id=self.persona.persona_id,
+                continuity_id=continuity_id,
+            ),
             MemoryRecord(
                 summary=data["summary"],
                 tags=tuple(data["tags"] + ["pruned"]),
                 significance=data["significance"],
+                metadata=memory_metadata,
             ),
         )
-        if record.significance >= self.moments_threshold:
+        self.archive.append(channel_id, record_to_dict(record))
+        partner_owned = not self.config.partner_user_id or continuity_id is not None
+        if partner_owned and record.significance >= self.moments_threshold:
             self.moments.append(f"[Pruned session] {record.summary}", list(record.tags))
         count = len(history)
+        summary_provenance = None
+        if continuity_id:
+            first = next(
+                (
+                    TurnProvenance.from_dict(item.get("provenance"))
+                    for item in history
+                    if TurnProvenance.from_dict(item.get("provenance")) is not None
+                ),
+                None,
+            )
+            if first is not None:
+                summary_provenance = replace(
+                    first,
+                    timestamp=datetime.now().astimezone().isoformat(),
+                    surface="summary",
+                    source_id=f"session-brief:{channel_id}:{datetime.now().timestamp()}",
+                    continuity_id=continuity_id,
+                )
         self.history.replace(
             channel_id,
             [
@@ -559,18 +773,36 @@ Return ONLY the session brief text, no JSON, no formatting — just the notes.""
                         "[Session Brief — compressed summary of our recent conversation, "
                         f"not a new message from {partner}]\n\n" + brief
                     ),
+                    **(
+                        {"provenance": summary_provenance.to_dict()}
+                        if summary_provenance is not None
+                        else {}
+                    ),
                 },
                 {
                     "role": "assistant",
                     "content": "I've got the thread. Continuing from where we left off.",
+                    **(
+                        {
+                            "provenance": summary_provenance.for_assistant(
+                                self.persona.persona_id,
+                                self.persona.companion_name,
+                            ).to_dict()
+                        }
+                        if summary_provenance is not None
+                        else {}
+                    ),
                 },
             ],
         )
         self.outreach.note_activity()
         return count
 
-    async def redist(self, channel_id: str) -> tuple[int, int]:
-        records = await self.memory.list(self.scope(channel_id))
+    async def redist(
+        self, channel_id: str, author_id: int | str | None = None
+    ) -> tuple[int, int]:
+        scope = self.scope(channel_id, author_id)
+        records = await self.memory.list(scope)
         if len(records) < 10:
             return len(records), len(records)
         listing = "\n\n".join(
@@ -600,6 +832,26 @@ Return ONLY valid JSON array:
         raw = parse_llm_json(response.text)
         if not isinstance(raw, list):
             raise RuntimeError("redist did not return a JSON array")
+        source_channels = sorted(
+            {
+                record.metadata.get("source_channel_id", "")
+                for record in records
+                if record.metadata.get("source_channel_id")
+            }
+        )
+        rebuilt_metadata = {
+            "redistilled": "true",
+            **(
+                {"source_channel_ids": ",".join(source_channels)}
+                if source_channels
+                else {}
+            ),
+            **(
+                {"continuity_id": scope.continuity_id}
+                if scope.continuity_id
+                else {}
+            ),
+        }
         rebuilt: list[MemoryRecord] = []
         for index, item in enumerate(raw):
             data = normalize_memory_data(item if isinstance(item, dict) else {}, "")
@@ -610,9 +862,10 @@ Return ONLY valid JSON array:
                     significance=data["significance"],
                     timestamp=item.get("timestamp") if isinstance(item, dict) else None,
                     memory_id=f"{channel_id}_distilled_{index:03d}",
+                    metadata=rebuilt_metadata,
                 )
             )
-        await self.memory.replace_all(self.scope(channel_id), rebuilt)
+        await self.memory.replace_all(scope, rebuilt)
         return len(records), len(rebuilt)
 
     async def maybe_reach_out(self) -> str | None:
@@ -622,6 +875,7 @@ Return ONLY valid JSON array:
                 print(f"[reach] Gate cooldown active until {self.outreach.data.get('next_gate_check')}")
             return None
         channel_id = str(self.config.watch_channel_id)
+        partner_scope = self.scope(channel_id, self.config.partner_user_id or None)
         partner = self.persona.partner_name
         companion = self.persona.companion_name
         now = self.outreach.now()
@@ -632,7 +886,9 @@ Return ONLY valid JSON array:
             f"{item['content'] if isinstance(item['content'], str) else '[media]'}"
             for item in tail
         ) or "(no recent conversation)"
-        memories = await self.memory.list(self.scope(channel_id))
+        memories = await self.list_memories(
+            channel_id, self.config.partner_user_id or None
+        )
         recent = "\n".join(f"• {item.summary}" for item in memories[-5:]) or "(none yet)"
         gate_prompt = f"""You are the judgment layer for {companion}, deciding whether they
 should send {partner} an unprompted message right now.
@@ -683,18 +939,32 @@ Return ONLY valid JSON:
         picked = await self._pick_memories(
             seed,
             await self.memory.recall(
-                self.scope(channel_id), seed, limit=self.config.max_recalled
+                partner_scope, seed, limit=self.config.max_recalled
             ),
         )
         if picked:
-            self._cached_recall[channel_id] = picked
+            self._cached_recall[partner_scope.storage_key] = picked
         trigger = (
             f"[{now.strftime('%A %I:%M %p')} — it's been quiet for about "
             f"{silence_h:.0f} hours. You felt like reaching out because: {seed}. "
             f"Say what you'd actually say — natural, in your voice, brief. "
             f"Don't announce that you decided to reach out.]"
         )
-        reply = await self.respond(channel_id, trigger, recall_source="automatic")
+        reply = await self.respond(
+            channel_id,
+            trigger,
+            recall_source="automatic",
+            provenance=TurnProvenance(
+                channel_id=channel_id,
+                channel_name="watch-channel",
+                surface="outreach",
+                author_id=f"system:{self.persona.persona_id}",
+                author_name="Outreach trigger",
+                trigger="outreach",
+                source_id=f"outreach:{datetime.now().timestamp()}",
+                continuity_id=partner_scope.continuity_id,
+            ),
+        )
         if reply.startswith("That one got away") or reply.startswith("Something went"):
             return None
         self.outreach.mark_sent()

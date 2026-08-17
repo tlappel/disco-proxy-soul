@@ -52,6 +52,23 @@ def _bounded_int(
     return value
 
 
+def _discord_ids(name: str, raw: str | None) -> tuple[int, ...]:
+    values: list[int] = []
+    for item in (raw or "").split(","):
+        text = item.strip()
+        if not text:
+            continue
+        try:
+            value = int(text)
+        except ValueError:
+            raise ValueError(f"{name} must contain comma-separated Discord IDs") from None
+        if value <= 0:
+            raise ValueError(f"{name} must contain positive Discord IDs")
+        if value not in values:
+            values.append(value)
+    return tuple(values)
+
+
 def parse_model_ref(raw: str, default_provider: str) -> tuple[str, str]:
     """Split 'provider:model' or bare 'model' into (provider, model)."""
     text = (raw or "").strip()
@@ -119,6 +136,29 @@ class RuntimeConfig:
     voice_playback_queue_seconds: float
     voice_barge_in_enabled: bool
     voice_barge_in_min_speech_ms: int
+    active_channel_ids: tuple[int, ...] = ()
+    partner_user_id: int = 0
+    cross_surface_recent_messages: int = 12
+    cross_surface_recent_chars: int = 4000
+    cross_surface_recent_minutes: int = 120
+
+    @property
+    def automatic_response_channel_ids(self) -> frozenset[int]:
+        values = set(self.active_channel_ids)
+        if self.watch_channel_id:
+            values.add(self.watch_channel_id)
+        return frozenset(values)
+
+    def continuity_id_for_user(self, user_id: int | str | None) -> str | None:
+        if not self.partner_user_id or user_id in (None, ""):
+            return None
+        try:
+            candidate = int(user_id)
+        except (TypeError, ValueError):
+            return None
+        if candidate != self.partner_user_id:
+            return None
+        return f"discord-user:{candidate}"
 
     @classmethod
     def from_env(cls) -> "RuntimeConfig":
@@ -299,6 +339,37 @@ class RuntimeConfig:
                 160,
                 40,
                 2_000,
+            ),
+            active_channel_ids=_discord_ids(
+                "ACTIVE_CHANNEL_IDS", os.getenv("ACTIVE_CHANNEL_IDS")
+            ),
+            partner_user_id=_bounded_int(
+                "PARTNER_USER_ID",
+                os.getenv("PARTNER_USER_ID"),
+                0,
+                0,
+                2**63 - 1,
+            ),
+            cross_surface_recent_messages=_bounded_int(
+                "CROSS_SURFACE_RECENT_MESSAGES",
+                os.getenv("CROSS_SURFACE_RECENT_MESSAGES"),
+                12,
+                0,
+                50,
+            ),
+            cross_surface_recent_chars=_bounded_int(
+                "CROSS_SURFACE_RECENT_CHARS",
+                os.getenv("CROSS_SURFACE_RECENT_CHARS"),
+                4_000,
+                0,
+                20_000,
+            ),
+            cross_surface_recent_minutes=_bounded_int(
+                "CROSS_SURFACE_RECENT_MINUTES",
+                os.getenv("CROSS_SURFACE_RECENT_MINUTES"),
+                120,
+                1,
+                1440,
             ),
         )
 

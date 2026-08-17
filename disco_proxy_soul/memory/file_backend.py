@@ -47,7 +47,7 @@ class FileMemoryBackend:
         self._store: dict[str, list[dict]] = raw if isinstance(raw, dict) else {}
 
     def _key(self, scope: Scope) -> str:
-        return scope.channel_id
+        return scope.storage_key
 
     def _persist(self) -> None:
         save_json(str(self.path), self._store)

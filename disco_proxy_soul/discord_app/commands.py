@@ -8,7 +8,30 @@ import discord
 from discord import app_commands
 
 from ..app import CompanionApp
+from ..memory.contracts import TurnProvenance
 from .voice_session import VoiceSessionError, VoiceSessionManager, VoiceSessionStatus
+
+
+def _interaction_provenance(
+    interaction: discord.Interaction, trigger: str
+) -> TurnProvenance:
+    channel = interaction.channel
+    if interaction.guild is None:
+        surface = "dm"
+    elif isinstance(channel, discord.Thread):
+        surface = "thread"
+    else:
+        surface = "text"
+    return TurnProvenance(
+        guild_id=str(interaction.guild.id) if interaction.guild else None,
+        channel_id=str(interaction.channel_id),
+        channel_name=getattr(channel, "name", None),
+        surface=surface,
+        author_id=str(interaction.user.id),
+        author_name=str(getattr(interaction.user, "display_name", interaction.user.name)),
+        trigger=trigger,
+        source_id=f"discord-interaction:{interaction.id}",
+    )
 
 
 def live_start_notice(
@@ -183,7 +206,7 @@ def register_commands(
     async def slash_status(interaction: discord.Interaction) -> None:
         ckey = str(interaction.channel_id)
         history = app.history.get(ckey)
-        memories = await app.memory.list(app.scope(ckey))
+        memories = await app.list_memories(ckey, interaction.user.id)
         facts = app.facts.raw()
         counts = app.persona.mode_counts()
         presence = "loaded" if app.presence_loaded else "off"
@@ -265,7 +288,9 @@ def register_commands(
     @app_commands.describe(query="What to search for")
     async def slash_recall(interaction: discord.Interaction, query: str) -> None:
         await interaction.response.defer(ephemeral=True)
-        records = await app.recall_command(str(interaction.channel_id), query)
+        records = await app.recall_command(
+            str(interaction.channel_id), query, interaction.user.id
+        )
         if not records:
             await interaction.followup.send(
                 f"**Recall success:** no\n**Query:** *{query}*\n**Memories loaded:** 0",
@@ -288,7 +313,12 @@ def register_commands(
                 f"{len(records)} memories were just surfaced into your active context. "
                 "Acknowledge this naturally. Do not dump or recite the memories mechanically.]"
             )
-            reply = await app.respond(str(interaction.channel_id), prompt, recall_source="manual")
+            reply = await app.respond(
+                str(interaction.channel_id),
+                prompt,
+                recall_source="manual",
+                provenance=_interaction_provenance(interaction, "slash-recall"),
+            )
             if len(reply) <= 2000:
                 await channel.send(reply)
             else:
@@ -297,7 +327,9 @@ def register_commands(
 
     @tree.command(name="memories", description="Show stored memory chunks")
     async def slash_memories(interaction: discord.Interaction) -> None:
-        records = await app.memory.list(app.scope(str(interaction.channel_id)))
+        records = await app.list_memories(
+            str(interaction.channel_id), interaction.user.id
+        )
         if not records:
             await interaction.response.send_message("No memories stored yet.", ephemeral=True)
             return
@@ -367,7 +399,7 @@ def register_commands(
                 else "No moments yet. Those are host or partner highlights, not your journal."
             )
         elif topic.value == "memories":
-            mems = await app.memory.list(app.scope(ckey))
+            mems = await app.list_memories(ckey, interaction.user.id)
             if mems:
                 summaries = "\n".join(
                     f"- [{(m.timestamp or '')[:10]}] {m.summary}" for m in mems[-10:]
@@ -396,7 +428,11 @@ def register_commands(
             "Read through this and share what stands out, what feels right, "
             f"what might be missing or outdated. Be yourself.\n\n{data}"
         )
-        reply = await app.respond(ckey, prompt)
+        reply = await app.respond(
+            ckey,
+            prompt,
+            provenance=_interaction_provenance(interaction, "slash-reflect"),
+        )
         if len(reply) <= 2000:
             await interaction.followup.send(reply)
             return
@@ -464,7 +500,9 @@ def register_commands(
     @tree.command(name="moment", description="Save a moment that matters — in your own words")
     @app_commands.describe(text="What happened and why it mattered")
     async def slash_moment(interaction: discord.Interaction, text: str) -> None:
-        await app.keep_moment(str(interaction.channel_id), text)
+        await app.keep_moment(
+            str(interaction.channel_id), text, interaction.user.id
+        )
         await interaction.response.send_message("Kept. 💛", ephemeral=True)
 
     @tree.command(name="prune", description="Compress conversation into a summary")
@@ -491,7 +529,9 @@ def register_commands(
     @tree.command(name="redist", description="Re-distill the memory archive")
     async def slash_redist(interaction: discord.Interaction) -> None:
         await interaction.response.send_message("Re-distilling memories...", ephemeral=True)
-        before, after = await app.redist(str(interaction.channel_id))
+        before, after = await app.redist(
+            str(interaction.channel_id), interaction.user.id
+        )
         await interaction.followup.send(
             f"Done. {before} → {after} memory chunks remaining.", ephemeral=True
         )

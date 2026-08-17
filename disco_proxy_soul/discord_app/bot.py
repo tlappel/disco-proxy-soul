@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from ..app import CompanionApp
 from ..adapters.gladia_live import redact_sensitive_text
 from ..config import RuntimeConfig
+from ..memory.contracts import TurnProvenance
 from ..safety import sanitize_outgoing
 from .attachments import build_user_parts
 from .commands import register_commands
@@ -22,6 +23,26 @@ from .voice_session import VoiceSessionManager
 
 
 APPLICATION_LOGGER_NAME = "disco_proxy_soul"
+
+
+class _CompanionCommandTree(app_commands.CommandTree):
+    """Keep private control and memory commands with the configured partner."""
+
+    def __init__(self, client: discord.Client, app: CompanionApp) -> None:
+        super().__init__(client)
+        self._companion_app = app
+
+    async def interaction_check(self, interaction: discord.Interaction, /) -> bool:
+        partner_user_id = self._companion_app.config.partner_user_id
+        if not partner_user_id or int(interaction.user.id) == partner_user_id:
+            return True
+        companion = self._companion_app.persona.companion_name
+        await interaction.response.send_message(
+            f"{companion}'s control and memory commands are restricted to "
+            "the configured partner.",
+            ephemeral=True,
+        )
+        return False
 
 
 class _RedactingApplicationFormatter(logging.Formatter):
@@ -59,13 +80,31 @@ def _clean_mentions(content: str, user_id: int) -> str:
     return content.replace(f"<@{user_id}>", "").replace(f"<@!{user_id}>", "").strip()
 
 
+def _response_trigger(
+    *, mentioned: bool, is_dm: bool, in_active: bool, is_reply: bool
+) -> str | None:
+    if is_dm:
+        return "dm"
+    if mentioned:
+        return "mention"
+    if is_reply:
+        return "reply"
+    if in_active:
+        return "active-channel"
+    return None
+
+
+def _author_allowed(partner_user_id: int, author_id: int) -> bool:
+    return not partner_user_id or int(author_id) == partner_user_id
+
+
 def build_bot(app: CompanionApp) -> discord.Client:
     intents = discord.Intents.default()
     intents.message_content = True
     intents.reactions = True
 
     client = discord.Client(intents=intents)
-    tree = app_commands.CommandTree(client)
+    tree = _CompanionCommandTree(client, app)
     voice_sessions = VoiceSessionManager(app.config, app=app)
     register_commands(tree, app, voice_sessions)
     companion = app.persona.companion_name
@@ -79,7 +118,8 @@ def build_bot(app: CompanionApp) -> discord.Client:
         print(f"Persona: {app.persona.persona_id} ({app.persona.root})")
         print(f"Primary model: {app.primary_model}")
         print(f"Data dir: {app.config.data_dir.resolve()}")
-        print(f"Watch channel: {app.config.watch_channel_id or 'not set (DM/mention/reply only)'}")
+        active = sorted(app.config.automatic_response_channel_ids)
+        print(f"Active channels: {active or 'none (DM/mention/reply only)'}")
         print(f"Outreach: {'enabled' if app.outreach.enabled else 'disabled'}")
         print("Do not run two processes with the same Discord token.")
         if not getattr(client, "_outreach_task", None):
@@ -89,22 +129,38 @@ def build_bot(app: CompanionApp) -> discord.Client:
     async def on_message(message: discord.Message) -> None:
         if message.author == client.user or message.author.bot:
             return
+        if not _author_allowed(app.config.partner_user_id, int(message.author.id)):
+            return
         mentioned = client.user is not None and client.user in message.mentions
         is_dm = message.guild is None
-        in_watch = (
-            app.config.watch_channel_id
-            and message.channel.id == app.config.watch_channel_id
-        )
+        in_active = message.channel.id in app.config.automatic_response_channel_ids
         is_reply = (
             message.reference
             and message.reference.resolved
             and getattr(message.reference.resolved, "author", None) == client.user
         )
-        if not any([mentioned, is_dm, in_watch, is_reply]):
+        trigger = _response_trigger(
+            mentioned=mentioned,
+            is_dm=is_dm,
+            in_active=in_active,
+            is_reply=bool(is_reply),
+        )
+        if trigger is None:
             return
 
         text = _clean_mentions(message.content, client.user.id) if client.user else message.content
-        display = f"[{message.author.display_name}]: {text}" if (not in_watch and text) else text
+        is_partner = bool(
+            app.config.partner_user_id
+            and int(message.author.id) == app.config.partner_user_id
+        )
+        identify_author = not in_active or (
+            bool(app.config.partner_user_id) and not is_partner
+        )
+        display = (
+            f"[{message.author.display_name}]: {text}"
+            if identify_author and text
+            else text
+        )
 
         print(
             f"[{'DM' if is_dm else '#' + getattr(message.channel, 'name', '?')}] "
@@ -121,7 +177,28 @@ def build_bot(app: CompanionApp) -> discord.Client:
             async with aiohttp.ClientSession() as session:
                 parts = await build_user_parts(message, display or "", session)
             store_text = display or "[image]"
-            reply = await app.respond(str(message.channel.id), store_text, parts=parts)
+            if is_dm:
+                surface = "dm"
+            elif isinstance(message.channel, discord.Thread):
+                surface = "thread"
+            else:
+                surface = "text"
+            provenance = TurnProvenance(
+                guild_id=str(message.guild.id) if message.guild else None,
+                channel_id=str(message.channel.id),
+                channel_name=getattr(message.channel, "name", None),
+                surface=surface,
+                author_id=str(message.author.id),
+                author_name=str(message.author.display_name),
+                trigger=trigger,
+                source_id=f"discord-message:{message.id}",
+            )
+            reply = await app.respond(
+                str(message.channel.id),
+                store_text,
+                parts=parts,
+                provenance=provenance,
+            )
         finally:
             if typing is not None:
                 try:
@@ -144,6 +221,8 @@ def build_bot(app: CompanionApp) -> discord.Client:
     async def on_reaction_add(reaction: discord.Reaction, user: discord.User) -> None:
         if user == client.user:
             return
+        if not _author_allowed(app.config.partner_user_id, int(user.id)):
+            return
         msg = reaction.message
         if msg.author != client.user:
             return
@@ -154,7 +233,11 @@ def build_bot(app: CompanionApp) -> discord.Client:
 
         if emoji == "📌":
             await app.pin_exchange(
-                ckey, getattr(msg.channel, "name", "dm"), user_text, reply_text
+                ckey,
+                getattr(msg.channel, "name", "dm"),
+                user_text,
+                reply_text,
+                user.id,
             )
             await msg.add_reaction("✅")
             return
@@ -174,7 +257,20 @@ def build_bot(app: CompanionApp) -> discord.Client:
                 f"{partner} reacted with {emoji} to your message: \"{msg.content[:100]}\""
             )
         async with msg.channel.typing():
-            reply = await app.respond(ckey, prompt)
+            reply = await app.respond(
+                ckey,
+                prompt,
+                provenance=TurnProvenance(
+                    guild_id=str(msg.guild.id) if msg.guild else None,
+                    channel_id=ckey,
+                    channel_name=getattr(msg.channel, "name", None),
+                    surface="dm" if msg.guild is None else "text",
+                    author_id=str(user.id),
+                    author_name=str(getattr(user, "display_name", user.name)),
+                    trigger="reaction",
+                    source_id=f"discord-reaction:{msg.id}:{user.id}:{emoji}",
+                ),
+            )
         sent = await msg.reply(reply)
         if sent:
             message_index[ckey][str(sent.id)] = (user_text, reply)
