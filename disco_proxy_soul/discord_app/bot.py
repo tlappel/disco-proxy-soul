@@ -17,7 +17,7 @@ from ..adapters.gladia_live import redact_sensitive_text
 from ..adapters.ollama_attention import OllamaAttentionConfig, OllamaAttentionJudge
 from ..config import RuntimeConfig
 from ..memory.contracts import TurnProvenance
-from ..runtime import DiscordRuntime, build_embedded_runtime
+from ..runtime import EmbeddedDiscordRuntime, build_embedded_runtime
 from ..safety import sanitize_outgoing
 from .attachments import build_user_parts
 from .commands import register_commands
@@ -36,7 +36,7 @@ APPLICATION_LOGGER_NAME = "disco_proxy_soul"
 class _CompanionCommandTree(app_commands.CommandTree):
     """Keep private control and memory commands with the configured partner."""
 
-    def __init__(self, client: discord.Client, app: DiscordRuntime) -> None:
+    def __init__(self, client: discord.Client, app: EmbeddedDiscordRuntime) -> None:
         super().__init__(client)
         self._companion_app = app
 
@@ -158,7 +158,7 @@ def social_ambient_notice(
     )
 
 
-def build_bot(app: DiscordRuntime) -> discord.Client:
+def build_bot(app: EmbeddedDiscordRuntime) -> discord.Client:
     intents = discord.Intents.default()
     intents.message_content = True
     intents.reactions = True
@@ -483,7 +483,9 @@ def build_bot(app: DiscordRuntime) -> discord.Client:
     return client
 
 
-async def _outreach_loop(client: discord.Client, app: DiscordRuntime) -> None:
+async def _outreach_loop(
+    client: discord.Client, app: EmbeddedDiscordRuntime
+) -> None:
     await client.wait_until_ready()
     app.outreach.record_loop_started()
     print(

@@ -1,9 +1,9 @@
 """Resident runtime boundary for the Discord body.
 
-Discord owns transport and participation behavior.  A runtime owns the
-resident response and the resident-facing control operations.  The embedded
-runtime remains the default; a connected runtime can implement the same shape
-later without replacing Discord's text, voice, or social surfaces.
+Discord owns transport and participation behavior.  The embedded application
+owns the resident response and resident-facing control operations.  These
+protocols name that existing boundary; the broad embedded facade is not the
+future transport-neutral Everthread contract.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from .persona.schema import PersonaPackage
 
 @runtime_checkable
 class ResidentRuntime(Protocol):
-    """The one cognition path shared by every Discord surface."""
+    """The current one-cognition path shared by every Discord surface."""
 
     async def respond(
         self,
@@ -35,12 +35,13 @@ class ResidentRuntime(Protocol):
     ) -> str: ...
 
 
-class DiscordRuntime(ResidentRuntime, Protocol):
-    """Resident operations currently used by the Discord body and commands.
+class EmbeddedDiscordRuntime(ResidentRuntime, Protocol):
+    """Legacy embedded operations used by the Discord body and commands.
 
     The public attributes reflect the existing embedded command surface.  They
-    are part of this compatibility seam, not permission for Discord modules to
-    create or write a second resident store.
+    are compatibility only.  A connected Everthread runtime must use a smaller
+    transport-neutral contract, replace raw store access with explicit
+    operations, and remain the sole resident-content writer.
     """
 
     config: RuntimeConfig
@@ -106,14 +107,14 @@ class DiscordRuntime(ResidentRuntime, Protocol):
     def export_paths(self) -> dict[str, Path]: ...
 
 
-RuntimeFactory = Callable[[RuntimeConfig], DiscordRuntime]
+RuntimeFactory = Callable[[RuntimeConfig], EmbeddedDiscordRuntime]
 
 
 def build_embedded_runtime(
     config: RuntimeConfig,
     *,
     factory: RuntimeFactory | None = None,
-) -> DiscordRuntime:
+) -> EmbeddedDiscordRuntime:
     """Construct exactly one resident runtime for the Discord process."""
 
     runtime_factory = factory or CompanionApp.from_env

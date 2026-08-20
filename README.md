@@ -30,9 +30,11 @@ turn grouping, playback, and delivery. All text, voice, and social responses
 meet at one resident runtime boundary.
 
 The default runtime is still the embedded `CompanionApp`, so standalone
-behavior is unchanged. A future connected runtime may place Everthread behind
-that boundary; it must replace the embedded resident owner for that process,
-not run a second history or memory writer beside it.
+behavior is unchanged. Its broad `EmbeddedDiscordRuntime` protocol only names
+the existing compatibility surface; it is not the future Everthread contract.
+A future connected runtime will use a smaller transport-neutral interface and
+must replace the embedded resident owner for that process, not run a second
+history or memory writer beside it.
 
 ## Requirements
 
