@@ -128,10 +128,44 @@ class ExternalMemoryHooks(Protocol):
 
     Hearth's NS daemon is one implementation. Any HTTP or in-process
     service that speaks this shape can sit here instead.
+
+    Two reads, one write, and one deferred inbox. All are optional at the
+    implementation level — return None from any read hook to skip; the
+    surface merges what it gets and moves on.
     """
 
     async def recent_context(self, scope: Scope) -> str | None:
-        """Cross-surface recents to inject into the prompt, or None."""
+        """Cross-surface recents to inject into the prompt, or None.
+
+        Recency-shaped. Called on every prompt build. Cheap; the surface
+        does not query-match here. Typical implementation: fetch the
+        last N deliberate captures (and any session distills) from the
+        shared store, format as an ambient block."""
+
+    async def recall_for_message(
+        self, scope: Scope, message: str, limit: int = 3
+    ) -> str | None:
+        """Semantic recall against the incoming user message, or None.
+
+        Called on every prompt build, keyed on what the user just said —
+        the door for "she meets him with context." Distinct from
+        recent_context() because recency alone misses relevant old memory
+        when the current topic isn't fresh in the bank. Cost-sensitive:
+        implementations should cap runtime and prefer skipping (return
+        None) over blocking the turn. Typical implementation: hybrid
+        embedding + keyword retrieval with a relevance floor."""
+
+    async def pending_pushes(self, scope: Scope) -> str | None:
+        """Unsolicited context the sidecar wants to surface, or None.
+
+        Deferred inbox for push-shaped signals — high-salience captures
+        that landed between turns, resident wake reflections, cross-room
+        events. Polled on prompt build (not interrupt-driven at the
+        protocol level; a real push transport is a separate concern for
+        implementations that want it). Implementations that don't do
+        push return None. Kept in the Protocol so the surface's prompt
+        assembly does not need to change when an implementation adds
+        push later."""
 
     async def capture(self, title: str, text: str, kind: str = "memory") -> None:
         """Deliberate write for a later adapter. File-only mode never calls this.
