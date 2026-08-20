@@ -13,11 +13,11 @@ import discord
 from discord import app_commands
 from dotenv import load_dotenv
 
-from ..app import CompanionApp
 from ..adapters.gladia_live import redact_sensitive_text
 from ..adapters.ollama_attention import OllamaAttentionConfig, OllamaAttentionJudge
 from ..config import RuntimeConfig
 from ..memory.contracts import TurnProvenance
+from ..runtime import DiscordRuntime, build_embedded_runtime
 from ..safety import sanitize_outgoing
 from .attachments import build_user_parts
 from .commands import register_commands
@@ -36,7 +36,7 @@ APPLICATION_LOGGER_NAME = "disco_proxy_soul"
 class _CompanionCommandTree(app_commands.CommandTree):
     """Keep private control and memory commands with the configured partner."""
 
-    def __init__(self, client: discord.Client, app: CompanionApp) -> None:
+    def __init__(self, client: discord.Client, app: DiscordRuntime) -> None:
         super().__init__(client)
         self._companion_app = app
 
@@ -158,7 +158,7 @@ def social_ambient_notice(
     )
 
 
-def build_bot(app: CompanionApp) -> discord.Client:
+def build_bot(app: DiscordRuntime) -> discord.Client:
     intents = discord.Intents.default()
     intents.message_content = True
     intents.reactions = True
@@ -483,7 +483,7 @@ def build_bot(app: CompanionApp) -> discord.Client:
     return client
 
 
-async def _outreach_loop(client: discord.Client, app: CompanionApp) -> None:
+async def _outreach_loop(client: discord.Client, app: DiscordRuntime) -> None:
     await client.wait_until_ready()
     app.outreach.record_loop_started()
     print(
@@ -529,6 +529,6 @@ def run() -> None:
             "No model provider key set. Add XAI_API_KEY (Grok), "
             "ANTHROPIC_API_KEY (Claude), or OPENAI_API_KEY."
         )
-    app = CompanionApp.from_env(config)
+    app = build_embedded_runtime(config)
     bot = build_bot(app)
     bot.run(config.discord_token)

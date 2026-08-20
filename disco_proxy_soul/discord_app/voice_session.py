@@ -1,8 +1,8 @@
 """Single-speaker Discord-to-Gladia live voice lifecycle.
 
 Discord audio remains transport-only here. Stable, locally corroborated finals
-are assembled into human turns and handed to ``CompanionApp.respond()``; that
-existing application path remains the sole owner of cognition and history.
+are assembled into human turns and handed to ``ResidentRuntime.respond()``;
+that runtime remains the sole owner of cognition and history.
 """
 
 from __future__ import annotations
@@ -36,6 +36,7 @@ from ..adapters.elevenlabs_tts import (
 )
 from ..config import RuntimeConfig
 from ..memory.contracts import TurnProvenance
+from ..runtime import ResidentRuntime
 from .voice_capture import CaptureSummary, WaveCaptureSession
 from .voice_compat import install_voice_receive_compatibility
 from .voice_sink import DiagnosticWaveSink, LivePCMFrame, LivePCMSink
@@ -462,17 +463,6 @@ class _TextChannel(Protocol):
     async def send(self, content: str) -> Any: ...
 
 
-class _Companion(Protocol):
-    async def respond(
-        self,
-        channel_id: str,
-        user_text: str,
-        *,
-        interaction_mode: str | None = None,
-        provenance: TurnProvenance | None = None,
-    ) -> str: ...
-
-
 @dataclass(frozen=True)
 class _SpeechEvidenceFrame:
     start: float
@@ -710,7 +700,7 @@ class VoiceSession:
         starter_user_id: int,
         starter_name: str,
         config: RuntimeConfig,
-        app: _Companion | None = None,
+        app: ResidentRuntime | None = None,
         conversation_lock: asyncio.Lock | None = None,
         gladia_factory: GladiaFactory = GladiaLiveSession,
         tts_factory: TTSFactory = ElevenLabsTTS,
@@ -2299,7 +2289,7 @@ class VoiceSessionManager:
         self,
         config: RuntimeConfig,
         *,
-        app: _Companion | None = None,
+        app: ResidentRuntime | None = None,
         gladia_factory: GladiaFactory = GladiaLiveSession,
         tts_factory: TTSFactory = ElevenLabsTTS,
         playback_factory: PlaybackFactory = VoicePlayback,

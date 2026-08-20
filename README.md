@@ -23,6 +23,17 @@ coding background. The rest of this file is the short version.
 - Experimental single-speaker Discord voice can stream live PCM to Gladia and
   post stable transcripts without saving raw audio
 
+### Runtime ownership
+
+Disco owns the Discord body: routing, participation policy, transcription,
+turn grouping, playback, and delivery. All text, voice, and social responses
+meet at one resident runtime boundary.
+
+The default runtime is still the embedded `CompanionApp`, so standalone
+behavior is unchanged. A future connected runtime may place Everthread behind
+that boundary; it must replace the embedded resident owner for that process,
+not run a second history or memory writer beside it.
+
 ## Requirements
 
 - Python 3.11+

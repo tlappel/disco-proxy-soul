@@ -8,8 +8,8 @@ from typing import Protocol
 import discord
 from discord import app_commands
 
-from ..app import CompanionApp
 from ..memory.contracts import TurnProvenance
+from ..runtime import DiscordRuntime
 from .voice_session import VoiceSessionError, VoiceSessionManager, VoiceSessionStatus
 
 
@@ -68,7 +68,7 @@ def live_start_notice(
 
 def register_commands(
     tree: app_commands.CommandTree,
-    app: CompanionApp,
+    app: DiscordRuntime,
     voice_sessions: VoiceSessionManager,
     social_presence: _SocialPresence | None = None,
 ) -> None:
