@@ -126,8 +126,8 @@ ollama pull qwen3:1.7b
 python -m disco_proxy_soul.adapters.ollama_attention
 ```
 
-The probe runs three small `ignore`, `wait`, and `speak` examples and reports
-the local decision, confidence, tokens, and model duration. It exits nonzero
+The probe runs nine small `ignore`, `wait`, and `speak` examples and reports
+each local decision, confidence, tokens, and model duration. It exits nonzero
 when a baseline decision does not match, so an overly silent gate cannot be
 mistaken for a successful acceptance probe.
 

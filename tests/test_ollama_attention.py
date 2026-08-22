@@ -69,12 +69,22 @@ class OllamaAttentionTests(unittest.IsolatedAsyncioTestCase):
             [
                 "system",
                 "user",
+                "assistant",
+                "user",
+                "assistant",
+                "user",
+                "assistant",
+                "user",
             ],
         )
-        self.assertIn("not a prohibition", payload["messages"][0]["content"])
+        self.assertIn("first matching rule", payload["messages"][0]["content"])
+        self.assertIn(
+            "human-to-human banter is not an invitation",
+            payload["messages"][0]["content"],
+        )
         self.assertIn(
             '"room_excerpt":"[Alex] Anyone have a thought?"',
-            payload["messages"][1]["content"],
+            payload["messages"][-1]["content"],
         )
 
     async def test_invalid_response_fails_closed(self) -> None:
@@ -89,9 +99,7 @@ class OllamaAttentionTests(unittest.IsolatedAsyncioTestCase):
         judge = AsyncMock()
         judge.ready.return_value = True
         judge.judge.side_effect = [
-            AttentionDecision("wait", 0.85, "too cautious"),
-            AttentionDecision("wait", 0.85, "reasonable wait"),
-            AttentionDecision("wait", 0.85, "missed opening"),
+            AttentionDecision("wait", 0.85, "mismatch") for _ in range(9)
         ]
         args = argparse.Namespace(
             base_url="http://127.0.0.1:11434",
@@ -111,6 +119,7 @@ class OllamaAttentionTests(unittest.IsolatedAsyncioTestCase):
             result = await _run_probe(args)
 
         self.assertEqual(result, 1)
+        self.assertEqual(judge.judge.await_count, 9)
 
 
 if __name__ == "__main__":
