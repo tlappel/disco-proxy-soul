@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import argparse
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from disco_proxy_soul.adapters.ollama_attention import (
+    AttentionDecision,
     OllamaAttentionConfig,
     OllamaAttentionError,
     OllamaAttentionJudge,
+    _run_probe,
 )
 
 
@@ -25,9 +28,7 @@ class OllamaAttentionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_structured_nonthinking_local_judgment(self) -> None:
         judge = OllamaAttentionJudge(
-            OllamaAttentionConfig(
-                model="qwen3:1.7b", threads=4, context_tokens=2048
-            )
+            OllamaAttentionConfig(model="qwen3:1.7b", threads=4, context_tokens=2048)
         )
         judge._post_chat = AsyncMock(
             return_value={
@@ -55,17 +56,61 @@ class OllamaAttentionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(payload["stream"])
         self.assertEqual(payload["options"]["num_thread"], 4)
         self.assertEqual(payload["options"]["num_ctx"], 2048)
-        self.assertEqual(payload["format"]["properties"]["decision"]["enum"], [
-            "speak",
-            "wait",
-            "ignore",
-        ])
+        self.assertEqual(
+            payload["format"]["properties"]["decision"]["enum"],
+            [
+                "speak",
+                "wait",
+                "ignore",
+            ],
+        )
+        self.assertEqual(
+            [message["role"] for message in payload["messages"]],
+            [
+                "system",
+                "user",
+            ],
+        )
+        self.assertIn("not a prohibition", payload["messages"][0]["content"])
+        self.assertIn(
+            '"room_excerpt":"[Alex] Anyone have a thought?"',
+            payload["messages"][1]["content"],
+        )
 
     async def test_invalid_response_fails_closed(self) -> None:
         judge = OllamaAttentionJudge(OllamaAttentionConfig())
         judge._post_chat = AsyncMock(return_value={"message": {"content": "nope"}})
         with self.assertRaises(OllamaAttentionError):
             await judge.judge("room", engaged=False)
+
+    async def test_default_probe_fails_when_baseline_decisions_do_not_match(
+        self,
+    ) -> None:
+        judge = AsyncMock()
+        judge.ready.return_value = True
+        judge.judge.side_effect = [
+            AttentionDecision("wait", 0.85, "too cautious"),
+            AttentionDecision("wait", 0.85, "reasonable wait"),
+            AttentionDecision("wait", 0.85, "missed opening"),
+        ]
+        args = argparse.Namespace(
+            base_url="http://127.0.0.1:11434",
+            model="qwen3:1.7b",
+            timeout=30.0,
+            threads=4,
+            context_tokens=2048,
+            keep_alive="30m",
+            text=None,
+            engaged=False,
+        )
+
+        with patch(
+            "disco_proxy_soul.adapters.ollama_attention.OllamaAttentionJudge",
+            return_value=judge,
+        ):
+            result = await _run_probe(args)
+
+        self.assertEqual(result, 1)
 
 
 if __name__ == "__main__":
