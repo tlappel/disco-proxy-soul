@@ -128,8 +128,10 @@ python -m disco_proxy_soul.adapters.ollama_attention
 
 The probe runs nine small `ignore`, `wait`, and `speak` examples and reports
 each local decision, confidence, tokens, and model duration. It exits nonzero
-when a baseline decision does not match, so an overly silent gate cannot be
-mistaken for a successful acceptance probe.
+when the safe boundary does not match: silence examples must never produce
+`speak`, and genuine openings must produce `speak`. Exact `ignore` versus
+`wait` labels remain visible diagnostics but currently have the same silent
+runtime behavior.
 
 The discretionary budget refills gradually. As it drains, the confidence
 threshold and cooldown rise; when empty, the room becomes addressed-only rather

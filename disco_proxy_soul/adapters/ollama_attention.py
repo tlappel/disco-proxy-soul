@@ -277,7 +277,9 @@ async def _run_probe(args: argparse.Namespace) -> int:
             f"tokens={result.prompt_tokens}/{result.output_tokens} "
             f"reason={result.reason}"
         )
-        if expected != "custom" and result.decision != expected:
+        if expected == "speak" and result.decision != "speak":
+            mismatches += 1
+        elif expected in {"ignore", "wait"} and result.decision == "speak":
             mismatches += 1
     return 1 if mismatches else 0
 

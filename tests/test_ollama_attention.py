@@ -93,7 +93,7 @@ class OllamaAttentionTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(OllamaAttentionError):
             await judge.judge("room", engaged=False)
 
-    async def test_default_probe_fails_when_baseline_decisions_do_not_match(
+    async def test_default_probe_fails_when_speak_silence_boundary_does_not_match(
         self,
     ) -> None:
         judge = AsyncMock()
@@ -120,6 +120,39 @@ class OllamaAttentionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, 1)
         self.assertEqual(judge.judge.await_count, 9)
+
+    async def test_default_probe_accepts_safe_ignore_wait_variation(self) -> None:
+        judge = AsyncMock()
+        judge.ready.return_value = True
+        judge.judge.side_effect = [
+            AttentionDecision("wait", 0.95, "safe silence"),
+            AttentionDecision("ignore", 0.95, "safe silence"),
+            AttentionDecision("wait", 0.95, "safe silence"),
+            AttentionDecision("ignore", 0.95, "safe silence"),
+            AttentionDecision("wait", 0.95, "safe silence"),
+            AttentionDecision("ignore", 0.95, "safe silence"),
+            AttentionDecision("speak", 0.95, "opening"),
+            AttentionDecision("speak", 0.95, "opening"),
+            AttentionDecision("speak", 0.95, "opening"),
+        ]
+        args = argparse.Namespace(
+            base_url="http://127.0.0.1:11434",
+            model="qwen3:1.7b",
+            timeout=30.0,
+            threads=4,
+            context_tokens=2048,
+            keep_alive="30m",
+            text=None,
+            engaged=False,
+        )
+
+        with patch(
+            "disco_proxy_soul.adapters.ollama_attention.OllamaAttentionJudge",
+            return_value=judge,
+        ):
+            result = await _run_probe(args)
+
+        self.assertEqual(result, 0)
 
 
 if __name__ == "__main__":
