@@ -610,9 +610,11 @@ The run also exposed four follow-ups, in priority order:
    private room. A temporary local-room transcript or author-only continuity
    key is not enough. Everthread owns this continuity; Disco should not grow a
    second memory system to compensate.
-2. A natural-language request for space must outrank the direct-address route.
-   The model probe understands this rule, but a name-address currently takes
-   the immediate route before the ambient gate can apply it.
+2. Code review found an untested precedence case: a natural-language request
+   for space should outrank the direct-address route, while a name-address
+   currently takes the immediate route before the ambient gate can apply it.
+   This was not exercised in the live acceptance run and is not counted as a
+   live failure.
 3. Long public messages can exceed the CPU gate's practical timing envelope.
    One 1,530-token request reached the 30-second timeout before generation.
    The live configuration was narrowed to six messages and 1,600 characters
