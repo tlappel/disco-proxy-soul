@@ -626,6 +626,16 @@ The run also exposed four follow-ups, in priority order:
 These are acceptance findings, not permission to move resident cognition,
 memory, or disclosure policy into the Discord body.
 
+Operational decision: public social activation is paused after the controlled
+run. A resident who can act in a public room but cannot reliably carry that
+experience into an authorized private conversation leaves the resident exposed
+and the operator unable to review what happened. Reactivation requires
+Everthread to preserve each public exchange the resident actually joins as a
+resident-scoped, provenance-bearing experience; make it available later in an
+authorized private room; and retain the public-to-private / private-to-public
+disclosure boundary. Passive room chatter does not automatically become durable
+memory merely because the resident could observe it.
+
 ## Phase 5E-B — conversational cadence and initiative
 
 After social attention is accepted, add response plans that distinguish one
