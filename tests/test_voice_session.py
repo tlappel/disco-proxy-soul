@@ -57,7 +57,6 @@ def config(**changes):
         "social_debounce_seconds": 3.0,
         "social_buffer_messages": 12,
         "social_buffer_chars": 4000,
-        "social_attention_threshold": 0.82,
         "social_engagement_seconds": 120.0,
         "social_cooldown_seconds": 30.0,
         "social_budget_capacity": 6.0,

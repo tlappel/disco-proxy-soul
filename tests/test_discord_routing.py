@@ -13,6 +13,7 @@ from disco_proxy_soul.discord_app.bot import (
     _author_allowed,
     _message_policy,
     _response_trigger,
+    _social_author_kind,
     social_ambient_notice,
 )
 
@@ -68,6 +69,44 @@ class DiscordRoutingTests(unittest.TestCase):
         self.assertIn("configured external `xai` response provider", notice)
         self.assertIn("RAM", notice)
         self.assertIn("Attachments", notice)
+        self.assertIn("approved AI residents", notice)
+
+    def test_social_author_kind_admits_people_and_approved_residents_only(self):
+        residents = (700,)
+        self.assertEqual(
+            _social_author_kind(
+                author_id=12,
+                is_bot=False,
+                is_self=False,
+                resident_user_ids=residents,
+            ),
+            "human",
+        )
+        self.assertEqual(
+            _social_author_kind(
+                author_id=700,
+                is_bot=True,
+                is_self=False,
+                resident_user_ids=residents,
+            ),
+            "ai_resident",
+        )
+        self.assertIsNone(
+            _social_author_kind(
+                author_id=800,
+                is_bot=True,
+                is_self=False,
+                resident_user_ids=residents,
+            )
+        )
+        self.assertIsNone(
+            _social_author_kind(
+                author_id=700,
+                is_bot=True,
+                is_self=True,
+                resident_user_ids=residents,
+            )
+        )
 
 
 class CommandPrivacyTests(unittest.IsolatedAsyncioTestCase):

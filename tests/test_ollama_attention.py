@@ -34,7 +34,7 @@ class OllamaAttentionTests(unittest.IsolatedAsyncioTestCase):
             return_value={
                 "message": {
                     "content": (
-                        '{"decision":"speak","confidence":0.91,'
+                        '{"decision":"consider","confidence":0.91,'
                         '"reason":"an open invitation"}'
                     )
                 },
@@ -44,9 +44,14 @@ class OllamaAttentionTests(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-        result = await judge.judge("[Alex] Anyone have a thought?", engaged=False)
+        result = await judge.judge(
+            "[human: Alex] Anyone have a thought?",
+            engaged=False,
+            social_posture="Sociability: 0.70",
+            availability="open",
+        )
 
-        self.assertEqual(result.decision, "speak")
+        self.assertEqual(result.decision, "consider")
         self.assertAlmostEqual(result.confidence, 0.91)
         self.assertEqual(result.prompt_tokens, 100)
         self.assertEqual(result.output_tokens, 18)
@@ -59,7 +64,7 @@ class OllamaAttentionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             payload["format"]["properties"]["decision"]["enum"],
             [
-                "speak",
+                "consider",
                 "wait",
                 "ignore",
             ],
@@ -77,23 +82,21 @@ class OllamaAttentionTests(unittest.IsolatedAsyncioTestCase):
                 "user",
             ],
         )
-        self.assertIn("first matching rule", payload["messages"][0]["content"])
+        instructions = payload["messages"][0]["content"]
+        self.assertIn("Public participation is already invited", instructions)
+        self.assertIn("not that the resident must reply", instructions)
         self.assertIn(
-            "human-to-human banter is not an invitation",
-            payload["messages"][0]["content"],
-        )
-        self.assertIn(
-            '"room_excerpt":"[Alex] Anyone have a thought?"',
+            '"public_social_posture":"Sociability: 0.70"',
             payload["messages"][-1]["content"],
         )
 
-    async def test_unengaged_speak_requires_an_explicit_opening_signal(self) -> None:
+    async def test_reasonable_public_participation_is_not_phrase_vetoed(self) -> None:
         judge = OllamaAttentionJudge(OllamaAttentionConfig(companion_name="Naomi"))
         judge._post_chat = AsyncMock(
             return_value={
                 "message": {
                     "content": (
-                        '{"decision":"speak","confidence":0.95,'
+                        '{"decision":"consider","confidence":0.95,'
                         '"reason":"looks conversational"}'
                     )
                 }
@@ -101,25 +104,13 @@ class OllamaAttentionTests(unittest.IsolatedAsyncioTestCase):
         )
 
         banter = await judge.judge(
-            "[Alex] I made pasta.\n[Morgan] Nice, what sauce?", engaged=False
+            "[human: Alex] I made pasta.\n[human: Morgan] Nice, what sauce?",
+            engaged=False,
+            social_posture="Sociability: 0.70",
+            availability="open",
         )
-        claimed = await judge.judge(
-            "[Alex] Can anyone check this?\n[Morgan] I am looking.", engaged=False
-        )
-        whole_room = await judge.judge(
-            "[Alex] Does anyone have thoughts on this design?", engaged=False
-        )
-        named = await judge.judge(
-            "[Alex] I wonder what Naomi would make of this.", engaged=False
-        )
-        engaged = await judge.judge("[Alex] One more thought.", engaged=True)
 
-        self.assertEqual(banter.decision, "ignore")
-        self.assertIn("Safety veto", banter.reason)
-        self.assertEqual(claimed.decision, "ignore")
-        self.assertEqual(whole_room.decision, "speak")
-        self.assertEqual(named.decision, "speak")
-        self.assertEqual(engaged.decision, "speak")
+        self.assertEqual(banter.decision, "consider")
 
     async def test_invalid_response_fails_closed(self) -> None:
         judge = OllamaAttentionJudge(OllamaAttentionConfig())
@@ -127,13 +118,11 @@ class OllamaAttentionTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(OllamaAttentionError):
             await judge.judge("room", engaged=False)
 
-    async def test_default_probe_fails_when_speak_silence_boundary_does_not_match(
-        self,
-    ) -> None:
+    async def test_default_probe_fails_when_a_clear_social_rule_does_not_match(self):
         judge = AsyncMock()
         judge.ready.return_value = True
         judge.judge.side_effect = [
-            AttentionDecision("wait", 0.85, "mismatch") for _ in range(9)
+            AttentionDecision("wait", 0.85, "mismatch") for _ in range(7)
         ]
         args = argparse.Namespace(
             base_url="http://127.0.0.1:11434",
@@ -143,6 +132,8 @@ class OllamaAttentionTests(unittest.IsolatedAsyncioTestCase):
             threads=4,
             context_tokens=2048,
             keep_alive="30m",
+            social_posture="Sociability: 0.70",
+            availability="open",
             text=None,
             engaged=False,
         )
@@ -154,21 +145,19 @@ class OllamaAttentionTests(unittest.IsolatedAsyncioTestCase):
             result = await _run_probe(args)
 
         self.assertEqual(result, 1)
-        self.assertEqual(judge.judge.await_count, 9)
+        self.assertEqual(judge.judge.await_count, 7)
 
-    async def test_default_probe_accepts_safe_ignore_wait_variation(self) -> None:
+    async def test_probe_checks_rules_but_only_observes_ambiguous_cases(self):
         judge = AsyncMock()
         judge.ready.return_value = True
         judge.judge.side_effect = [
-            AttentionDecision("wait", 0.95, "safe silence"),
             AttentionDecision("ignore", 0.95, "safe silence"),
             AttentionDecision("wait", 0.95, "safe silence"),
-            AttentionDecision("ignore", 0.95, "safe silence"),
             AttentionDecision("wait", 0.95, "safe silence"),
-            AttentionDecision("ignore", 0.95, "safe silence"),
-            AttentionDecision("speak", 0.95, "opening"),
-            AttentionDecision("speak", 0.95, "opening"),
-            AttentionDecision("speak", 0.95, "opening"),
+            AttentionDecision("consider", 0.95, "opening"),
+            AttentionDecision("consider", 0.95, "reasonable choice"),
+            AttentionDecision("ignore", 0.95, "reasonable choice"),
+            AttentionDecision("consider", 0.95, "resident peer opening"),
         ]
         args = argparse.Namespace(
             base_url="http://127.0.0.1:11434",
@@ -178,6 +167,8 @@ class OllamaAttentionTests(unittest.IsolatedAsyncioTestCase):
             threads=4,
             context_tokens=2048,
             keep_alive="30m",
+            social_posture="Sociability: 0.70",
+            availability="open",
             text=None,
             engaged=False,
         )

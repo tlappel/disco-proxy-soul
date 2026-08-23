@@ -131,6 +131,36 @@ class PersonaLoaderTests(unittest.TestCase):
         self.assertEqual(persona.character.fields["occupation"], "night shift")
         self.assertEqual(persona.character.example_lines, ("slow and deep. yes.",))
 
+    def test_social_posture_is_public_safe_and_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = _write_package(Path(tmp) / "example")
+            (root / "social_posture.json").write_text(
+                json.dumps(
+                    {
+                        "traits": {"sociability": 0.65, "Openness": 0.75},
+                        "description": "Curious in public without dominating.",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            persona = load_persona(root)
+
+        self.assertEqual(persona.social_posture.traits["sociability"], 0.65)
+        self.assertEqual(persona.social_posture.traits["openness"], 0.75)
+        rendered = persona.social_posture.format_for_attention()
+        self.assertIn("Sociability: 0.65", rendered)
+        self.assertIn("Curious in public", rendered)
+
+    def test_invalid_social_posture_trait_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = _write_package(Path(tmp) / "example")
+            (root / "social_posture.json").write_text(
+                json.dumps({"traits": {"sociability": 1.5}}),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(PersonaLoadError, "between 0 and 1"):
+                load_persona(root)
+
     def test_missing_layer_path_raises(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = _write_package(

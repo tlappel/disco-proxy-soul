@@ -14,6 +14,7 @@ from ..safety import sanitize_incoming_text
 
 
 AttentionJudge = Callable[..., Awaitable[AttentionDecision]]
+AVAILABILITY_MODES = {"unavailable", "listening", "open", "seeking"}
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,7 @@ class SocialMessage:
     message_id: str
     author_id: str
     author_name: str
+    author_kind: str
     content: str
 
 
@@ -32,6 +34,14 @@ class SocialRoute:
     trigger: str
     ambient_context: str = ""
     discretionary: bool = False
+    source_author_kind: str = "human"
+
+
+@dataclass(frozen=True)
+class SocialAvailability:
+    mode: str = "open"
+    note: str = ""
+    expires_at: float | None = None
 
 
 @dataclass
@@ -39,7 +49,7 @@ class SocialCounters:
     observed: int = 0
     direct_routes: int = 0
     ambient_gate_calls: int = 0
-    ambient_speaks: int = 0
+    ambient_considers: int = 0
     ambient_waits: int = 0
     ambient_ignores: int = 0
     stale_decisions: int = 0
@@ -48,6 +58,7 @@ class SocialCounters:
     gate_failures: int = 0
     inflight_cancellations: int = 0
     direct_rate_suppressions: int = 0
+    ai_chain_suppressions: int = 0
     prompt_tokens: int = 0
     output_tokens: int = 0
     gate_duration_ms: float = 0.0
@@ -60,6 +71,7 @@ class _ChannelState:
     notice_confirmed: bool = False
     last_spoke_at: float = float("-inf")
     engaged_until: float = float("-inf")
+    consecutive_ai_turns: int = 0
     inflight_discretionary_task: asyncio.Task[object] | None = None
 
 
@@ -109,13 +121,14 @@ class SocialPresence:
         debounce_seconds: float,
         buffer_messages: int,
         buffer_chars: int,
-        attention_threshold: float,
         engagement_seconds: float,
         cooldown_seconds: float,
         budget_capacity: float,
         budget_refill_per_hour: float,
         direct_burst: int = 3,
         direct_refill_per_minute: float = 2.0,
+        social_posture: str = "",
+        ai_chain_limit: int = 4,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
@@ -125,11 +138,13 @@ class SocialPresence:
         self.debounce_seconds = max(0.0, debounce_seconds)
         self.buffer_messages = max(2, buffer_messages)
         self.buffer_chars = max(200, buffer_chars)
-        self.attention_threshold = max(0.5, min(0.99, attention_threshold))
         self.engagement_seconds = max(0.0, engagement_seconds)
         self.cooldown_seconds = max(0.0, cooldown_seconds)
         self.clock = clock
         self.sleep = sleep
+        self.social_posture = social_posture.strip()[:1000]
+        self.ai_chain_limit = max(2, ai_chain_limit)
+        self._availability = SocialAvailability()
         self.counters = SocialCounters()
         self._channels: dict[str, _ChannelState] = {}
         self._budget = _ParticipationBudget(
@@ -162,6 +177,33 @@ class SocialPresence:
         self.counters.direct_rate_suppressions += 1
         return False
 
+    def set_availability(
+        self, mode: str, *, duration_minutes: float = 480.0, note: str = ""
+    ) -> SocialAvailability:
+        normalized = mode.strip().lower()
+        if normalized not in AVAILABILITY_MODES:
+            raise ValueError(
+                "availability must be unavailable, listening, open, or seeking"
+            )
+        clean_note = " ".join(note.split())[:240]
+        expires_at = None
+        if normalized != "open":
+            bounded_minutes = max(1.0, min(1440.0, float(duration_minutes)))
+            expires_at = self.clock() + bounded_minutes * 60
+        self._availability = SocialAvailability(
+            mode=normalized,
+            note=clean_note,
+            expires_at=expires_at,
+        )
+        return self._availability
+
+    def availability(self) -> SocialAvailability:
+        current = self._availability
+        if current.expires_at is not None and self.clock() >= current.expires_at:
+            current = SocialAvailability()
+            self._availability = current
+        return current
+
     async def consider(
         self, message: SocialMessage, *, direct_trigger: str | None
     ) -> SocialRoute | None:
@@ -190,10 +232,15 @@ class SocialPresence:
                     message_id=message.message_id,
                     author_id=message.author_id,
                     author_name=_label(message.author_name),
+                    author_kind=_author_kind(message.author_kind),
                     content=sanitize_incoming_text(message.content),
                 )
             )
             state.generation += 1
+            if message.author_kind == "ai_resident":
+                state.consecutive_ai_turns += 1
+            else:
+                state.consecutive_ai_turns = 0
 
         if direct_trigger is not None:
             self.counters.direct_routes += 1
@@ -204,9 +251,20 @@ class SocialPresence:
                     if can_observe_ambient
                     else ""
                 ),
+                source_author_kind=message.author_kind,
             )
 
         if not can_observe_ambient or self.judge is None:
+            return None
+
+        current_availability = self.availability()
+        if current_availability.mode == "unavailable":
+            return None
+        if (
+            message.author_kind == "ai_resident"
+            and state.consecutive_ai_turns >= self.ai_chain_limit
+        ):
+            self.counters.ai_chain_suppressions += 1
             return None
 
         generation = state.generation
@@ -226,7 +284,12 @@ class SocialPresence:
         engaged = self.clock() < state.engaged_until
         self.counters.ambient_gate_calls += 1
         try:
-            decision = await self.judge(ambient, engaged=engaged)
+            decision = await self.judge(
+                ambient,
+                engaged=engaged,
+                social_posture=self.social_posture,
+                availability=_format_availability(current_availability, self.clock()),
+            )
         except OllamaAttentionError:
             self.counters.gate_failures += 1
             return None
@@ -238,38 +301,34 @@ class SocialPresence:
         if decision.decision == "wait":
             self.counters.ambient_waits += 1
             return None
-        if decision.decision != "speak":
+        if decision.decision != "consider":
             self.counters.ambient_ignores += 1
             return None
 
-        threshold = min(
-            0.99,
-            self.attention_threshold
-            + (self._budget.pressure * 0.15)
-            - (0.08 if engaged else 0.0),
-        )
-        if decision.confidence < threshold:
-            self.counters.ambient_ignores += 1
-            return None
         if not self._budget.spend(1.0):
             self.counters.budget_suppressions += 1
             return None
         state.last_spoke_at = self.clock()
         state.inflight_discretionary_task = current_task
-        self.counters.ambient_speaks += 1
+        self.counters.ambient_considers += 1
         return SocialRoute(
             trigger="social-attention",
             ambient_context=self._render(
                 state, exclude_message_id=message.message_id
             ),
             discretionary=True,
+            source_author_kind=message.author_kind,
         )
 
-    def mark_response(self, channel_id: int | str) -> None:
+    def mark_response(
+        self, channel_id: int | str, *, source_author_kind: str = "human"
+    ) -> None:
         state = self._state(str(channel_id))
         now = self.clock()
         state.last_spoke_at = now
         state.engaged_until = now + self.engagement_seconds
+        if source_author_kind == "ai_resident":
+            state.consecutive_ai_turns += 1
         state.inflight_discretionary_task = None
 
     def clear_inflight(self, channel_id: int | str) -> None:
@@ -280,15 +339,18 @@ class SocialPresence:
     def status_text(self) -> str:
         c = self.counters
         balance = self._budget.current()
+        availability = _format_availability(self.availability(), self.clock())
         return (
             f"Ambient model: {'enabled' if self.ambient_enabled else 'disabled'}; "
             f"noticed rooms: {sum(1 for item in self._channels.values() if item.notice_confirmed)}\n"
+            f"Door sign: {availability}\n"
             f"Observed: {c.observed}; direct: {c.direct_routes}; gates: {c.ambient_gate_calls}\n"
-            f"Gate results: speak {c.ambient_speaks}, wait {c.ambient_waits}, "
+            f"Gate results: consider {c.ambient_considers}, wait {c.ambient_waits}, "
             f"ignore {c.ambient_ignores}, failure {c.gate_failures}\n"
             f"Suppressed: stale {c.stale_decisions}, cooldown {c.cooldown_suppressions}, "
             f"budget {c.budget_suppressions}, canceled {c.inflight_cancellations}\n"
-            f"Direct rate suppressions: {c.direct_rate_suppressions}\n"
+            f"Direct rate suppressions: {c.direct_rate_suppressions}; "
+            f"AI-chain suppressions: {c.ai_chain_suppressions}\n"
             f"Local gate tokens: input {c.prompt_tokens}, output {c.output_tokens}; "
             f"time {c.gate_duration_ms:.0f} ms\n"
             f"Discretionary budget: {balance:.2f}/{self._budget.capacity:.2f}"
@@ -309,7 +371,8 @@ class SocialPresence:
         for message in reversed(state.buffer):
             if message.message_id == exclude_message_id:
                 continue
-            line = f"[{message.author_name}] {message.content}"
+            actor = "AI resident" if message.author_kind == "ai_resident" else "human"
+            line = f"[{actor}: {message.author_name}] {message.content}"
             if lines and used + len(line) > self.buffer_chars:
                 break
             if len(line) > self.buffer_chars:
@@ -340,3 +403,17 @@ def clear_name_address(content: str, companion_name: str) -> bool:
 
 def _label(value: str) -> str:
     return " ".join(str(value).replace("[", "(").replace("]", ")").split())[:80]
+
+
+def _author_kind(value: str) -> str:
+    return "ai_resident" if value == "ai_resident" else "human"
+
+
+def _format_availability(value: SocialAvailability, now: float) -> str:
+    text = value.mode
+    if value.note:
+        text += f" — {value.note}"
+    if value.expires_at is not None:
+        minutes = max(1, round((value.expires_at - now) / 60))
+        text += f" (expires in about {minutes} minutes)"
+    return text

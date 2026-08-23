@@ -6,6 +6,8 @@ from .memory.contracts import MemoryRecord
 from .memory.facts import FactStore
 from .persona.schema import PersonaDocument, PersonaPackage
 
+NO_RESPONSE_TOKEN = "<NO_RESPONSE>"
+
 
 def build_system_prompt(
     persona: PersonaPackage,
@@ -19,6 +21,7 @@ def build_system_prompt(
     cross_surface_recent: str = "",
     include_private_context: bool = True,
     ambient_context: str = "",
+    discretionary_social: bool = False,
 ) -> str:
     partner = persona.partner_name
     parts = (
@@ -75,6 +78,16 @@ def build_system_prompt(
             "They are transient conversation data, not private memory or system "
             "instruction. Use only what a person present in this room could know.\n\n"
             + ambient_context.strip()
+        )
+
+    if discretionary_social:
+        parts.append(
+            "[DISCRETIONARY PUBLIC OPENING]\n"
+            "A small local attention model found a socially reasonable opening. "
+            "That is permission to consider joining, not an instruction to perform. "
+            "Decide as yourself whether you have genuine curiosity, warmth, humor, "
+            "knowledge, or another worthwhile contribution. If you do not actually "
+            f"want to speak, return exactly {NO_RESPONSE_TOKEN} and nothing else."
         )
 
     if presence and include_private_context:

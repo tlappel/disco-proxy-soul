@@ -24,7 +24,12 @@ class FakeClock:
         self.value += seconds
 
 
-def message(number: int, content: str = "What do people think?") -> SocialMessage:
+def message(
+    number: int,
+    content: str = "What do people think?",
+    *,
+    author_kind: str = "human",
+) -> SocialMessage:
     return SocialMessage(
         guild_id="1",
         channel_id="22",
@@ -32,6 +37,7 @@ def message(number: int, content: str = "What do people think?") -> SocialMessag
         message_id=str(number),
         author_id=str(100 + number),
         author_name=f"Human {number}",
+        author_kind=author_kind,
         content=content,
     )
 
@@ -46,11 +52,12 @@ class SocialPresenceTests(unittest.IsolatedAsyncioTestCase):
             debounce_seconds=0.01,
             buffer_messages=12,
             buffer_chars=4000,
-            attention_threshold=0.82,
             engagement_seconds=120,
             cooldown_seconds=0,
             budget_capacity=capacity,
             budget_refill_per_hour=0.1,
+            social_posture="Sociability: 0.70\nNotes: Curious in public rooms.",
+            ai_chain_limit=4,
             clock=clock,
             sleep=sleep or asyncio.sleep,
         )
@@ -62,7 +69,7 @@ class SocialPresenceTests(unittest.IsolatedAsyncioTestCase):
         async def judge(*args, **kwargs):
             nonlocal calls
             calls += 1
-            return AttentionDecision("speak", 1.0, "yes")
+            return AttentionDecision("consider", 1.0, "yes")
 
         presence, _ = self.make_presence(judge=judge, ambient=False)
         self.assertIsNone(await presence.consider(message(1), direct_trigger=None))
@@ -77,7 +84,7 @@ class SocialPresenceTests(unittest.IsolatedAsyncioTestCase):
         async def judge(*args, **kwargs):
             nonlocal calls
             calls += 1
-            return AttentionDecision("speak", 1.0, "yes")
+            return AttentionDecision("consider", 1.0, "yes")
 
         presence, _ = self.make_presence(judge=judge)
         self.assertIsNone(await presence.consider(message(1), direct_trigger=None))
@@ -118,7 +125,7 @@ class SocialPresenceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_soft_budget_preserves_direct_routes_after_discretionary_depletion(self):
         async def judge(*args, **kwargs):
-            return AttentionDecision("speak", 1.0, "opening")
+            return AttentionDecision("consider", 1.0, "opening")
 
         presence, _ = self.make_presence(judge=judge, capacity=1)
         presence.confirm_notice("22")
@@ -137,7 +144,7 @@ class SocialPresenceTests(unittest.IsolatedAsyncioTestCase):
         hold = asyncio.Event()
 
         async def judge(*args, **kwargs):
-            return AttentionDecision("speak", 1.0, "opening")
+            return AttentionDecision("consider", 1.0, "opening")
 
         presence, _ = self.make_presence(judge=judge)
         presence.confirm_notice("22")
@@ -174,6 +181,79 @@ class SocialPresenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(clear_name_address("hey Naomi: come look", "Naomi"))
         self.assertFalse(clear_name_address("Naomi would probably agree", "Naomi"))
         self.assertFalse(clear_name_address("I spoke with Naomi yesterday", "Naomi"))
+
+    async def test_gate_receives_posture_door_sign_and_actor_labels(self):
+        observed = {}
+
+        async def judge(context, **kwargs):
+            observed["context"] = context
+            observed.update(kwargs)
+            return AttentionDecision("ignore", 1.0, "quiet")
+
+        presence, _ = self.make_presence(judge=judge)
+        presence.confirm_notice("22")
+        presence.set_availability(
+            "listening", duration_minutes=60, note="Low-key today"
+        )
+        await presence.consider(
+            message(1, "Naomi, are you curious too?", author_kind="ai_resident"),
+            direct_trigger=None,
+        )
+
+        self.assertIn("[AI resident: Human 1]", observed["context"])
+        self.assertIn("Sociability: 0.70", observed["social_posture"])
+        self.assertIn("listening", observed["availability"])
+        self.assertIn("Low-key today", observed["availability"])
+
+    async def test_unavailable_blocks_ambient_but_not_direct_address(self):
+        calls = 0
+
+        async def judge(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return AttentionDecision("consider", 1.0, "opening")
+
+        presence, _ = self.make_presence(judge=judge)
+        presence.confirm_notice("22")
+        presence.set_availability("unavailable", duration_minutes=60)
+
+        self.assertIsNone(await presence.consider(message(1), direct_trigger=None))
+        direct = await presence.consider(message(2), direct_trigger="mention")
+
+        self.assertEqual(calls, 0)
+        self.assertEqual(direct.trigger, "mention")
+
+    async def test_door_sign_expires_back_to_open(self):
+        presence, clock = self.make_presence(ambient=False)
+        presence.set_availability("listening", duration_minutes=1)
+        self.assertEqual(presence.availability().mode, "listening")
+        clock.advance(61)
+        self.assertEqual(presence.availability().mode, "open")
+
+    async def test_ai_chain_stops_until_a_human_resets_it(self):
+        async def judge(*args, **kwargs):
+            return AttentionDecision("consider", 1.0, "opening")
+
+        presence, _ = self.make_presence(judge=judge, capacity=10)
+        presence.confirm_notice("22")
+        first = await presence.consider(
+            message(1, author_kind="ai_resident"), direct_trigger=None
+        )
+        self.assertIsNotNone(first)
+        presence.mark_response("22", source_author_kind="ai_resident")
+        second = await presence.consider(
+            message(2, author_kind="ai_resident"), direct_trigger=None
+        )
+        self.assertIsNotNone(second)
+        presence.mark_response("22", source_author_kind="ai_resident")
+        blocked = await presence.consider(
+            message(3, author_kind="ai_resident"), direct_trigger=None
+        )
+        self.assertIsNone(blocked)
+        self.assertEqual(presence.counters.ai_chain_suppressions, 1)
+
+        human = await presence.consider(message(4), direct_trigger=None)
+        self.assertIsNotNone(human)
 
 
 if __name__ == "__main__":

@@ -87,6 +87,7 @@ class PublicPersona(FakePersona):
 class RecordingModels:
     def __init__(self) -> None:
         self.requests = []
+        self.response_text = "I remember the thread."
 
     async def complete(self, tier, request):
         self.requests.append((tier, request))
@@ -102,7 +103,7 @@ class RecordingModels:
                 provider="fake",
                 model="fake",
             )
-        return ModelResponse(text="I remember the thread.", provider="fake", model="fake")
+        return ModelResponse(text=self.response_text, provider="fake", model="fake")
 
 
 def provenance(
@@ -290,6 +291,34 @@ class ContinuityTests(unittest.IsolatedAsyncioTestCase):
 
             app.record_exchange("44", user_text, reply, current)
             self.assertEqual(len(app.history.get("44")), 2)
+
+    async def test_discretionary_public_opening_allows_resident_to_decline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self.make_app(Path(tmp))
+            app.persona = PublicPersona()
+            app.models.response_text = "<NO_RESPONSE>"
+            current = replace(
+                provenance(
+                    "44", author_id=99, author_name="Alex", source_id="declined"
+                ),
+                disclosure_scope="public",
+            )
+
+            reply = await app.respond(
+                "44",
+                "[Alex]: An opening",
+                provenance=current,
+                ambient_context="[human: Morgan] Related public context",
+                store_history=False,
+                discretionary_social=True,
+            )
+
+            self.assertEqual(reply, "")
+            self.assertEqual(app.history.get("44"), [])
+            self.assertIn(
+                "permission to consider joining, not an instruction to perform",
+                app.models.requests[-1][1].system,
+            )
 
     async def test_guest_cannot_spoof_continuity_but_internal_outreach_keeps_it(self):
         with tempfile.TemporaryDirectory() as tmp:

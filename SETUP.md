@@ -121,6 +121,7 @@ Optional shared-room modes use separate channel allowlists:
 
 ```env
 SOCIAL_CHANNEL_IDS=community-channel-id
+SOCIAL_RESIDENT_USER_IDS=approved-resident-bot-user-id
 ADDRESSED_CHANNEL_IDS=mention-only-channel-id
 IGNORED_CHANNEL_IDS=channel-the-bot-must-ignore
 ```
@@ -137,6 +138,7 @@ host, pull `qwen3:1.7b`, and then opt in:
 SOCIAL_AMBIENT_ENABLED=true
 OLLAMA_BASE_URL=http://127.0.0.1:11434
 SOCIAL_ATTENTION_MODEL=qwen3:1.7b
+SOCIAL_AI_CHAIN_LIMIT=4
 ```
 
 Verify Ollama before starting the bot:
@@ -151,6 +153,10 @@ posts a public processing notice in every social channel. Until that notice
 succeeds, no ambient buffer or model judgment occurs. Selected public context
 uses `MODEL_SOCIAL`, which defaults to the primary cognition model. Use
 `/social-status` to inspect decisions, throttling, latency, and local tokens.
+Use `/social-door` to test an expiring `unavailable`, `listening`, `open`, or
+`seeking` door sign. Add `social_posture.json` to the persona package when the
+local gate should consider a public-safe description of the resident's usual
+social tendencies.
 
 Leave `PERSONA_ID=example` and `PERSONA_DIR=personas/example` for the first
 run. You will change those when you add your own persona (step 8).

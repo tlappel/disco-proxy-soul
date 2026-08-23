@@ -16,6 +16,10 @@ from .voice_session import VoiceSessionError, VoiceSessionManager, VoiceSessionS
 class _SocialPresence(Protocol):
     def status_text(self) -> str: ...
 
+    def set_availability(
+        self, mode: str, *, duration_minutes: float = 480.0, note: str = ""
+    ) -> object: ...
+
 
 def _interaction_provenance(
     interaction: discord.Interaction, trigger: str
@@ -86,6 +90,35 @@ def register_commands(
             description="Show social attention, throttling, and local-gate status",
         )
         async def slash_social_status(interaction: discord.Interaction) -> None:
+            await interaction.response.send_message(
+                f"**Social Presence Status**\n{social_presence.status_text()}",
+                ephemeral=True,
+            )
+
+        @tree.command(
+            name="social-door",
+            description="Set the resident's temporary public social availability",
+        )
+        @app_commands.describe(
+            mode="unavailable, listening, open, or seeking",
+            duration_minutes="Temporary duration; open stays until changed",
+            note="Optional public-safe note for the local attention gate",
+        )
+        async def slash_social_door(
+            interaction: discord.Interaction,
+            mode: str,
+            duration_minutes: app_commands.Range[int, 1, 1440] = 480,
+            note: str = "",
+        ) -> None:
+            try:
+                social_presence.set_availability(
+                    mode,
+                    duration_minutes=float(duration_minutes),
+                    note=note,
+                )
+            except ValueError as exc:
+                await interaction.response.send_message(str(exc), ephemeral=True)
+                return
             await interaction.response.send_message(
                 f"**Social Presence Status**\n{social_presence.status_text()}",
                 ephemeral=True,

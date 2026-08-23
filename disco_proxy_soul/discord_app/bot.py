@@ -106,6 +106,22 @@ def _author_allowed(partner_user_id: int, author_id: int) -> bool:
     return not partner_user_id or int(author_id) == partner_user_id
 
 
+def _social_author_kind(
+    *,
+    author_id: int,
+    is_bot: bool,
+    is_self: bool,
+    resident_user_ids: tuple[int, ...],
+) -> str | None:
+    if is_self:
+        return None
+    if not is_bot:
+        return "human"
+    if author_id in resident_user_ids:
+        return "ai_resident"
+    return None
+
+
 @dataclass(frozen=True)
 class _MessagePolicy:
     route_kind: str
@@ -148,13 +164,15 @@ def social_ambient_notice(
 ) -> str:
     return (
         f"**{companion_name} social presence is active in this channel.** "
-        f"Visible human text may be examined transiently on this host by local "
-        f"Ollama model `{attention_model}` to decide whether {companion_name} should "
-        "join without a mention. The ambient buffer stays in RAM and is not written "
+        f"Visible human text and messages from explicitly approved AI residents may "
+        f"be examined transiently on this host by local "
+        f"Ollama model `{attention_model}` to decide whether an opening is worth "
+        f"bringing to {companion_name}'s attention. The ambient buffer stays in "
+        "RAM and is not written "
         "to conversation history or durable memory. If the local gate chooses to "
-        f"speak, a bounded public excerpt is sent to the configured external "
-        f"`{response_provider}` response provider. Attachments, bot messages, DMs, and private channels are "
-        "not included in ambient processing."
+        f"consider joining, a bounded public excerpt is sent to the configured external "
+        f"`{response_provider}` response provider. Attachments, unapproved utility-bot "
+        "messages, DMs, and private channels are not included in ambient processing."
     )
 
 
@@ -168,6 +186,9 @@ def build_bot(app: CompanionApp) -> discord.Client:
     voice_sessions = VoiceSessionManager(app.config, app=app)
     companion = app.persona.companion_name
     partner = app.persona.partner_name
+    posture = getattr(app.persona, "social_posture", None)
+    format_posture = getattr(posture, "format_for_attention", None)
+    social_posture = format_posture() if callable(format_posture) else ""
     attention = OllamaAttentionJudge(
         OllamaAttentionConfig(
             base_url=app.config.ollama_base_url,
@@ -185,13 +206,14 @@ def build_bot(app: CompanionApp) -> discord.Client:
         debounce_seconds=app.config.social_debounce_seconds,
         buffer_messages=app.config.social_buffer_messages,
         buffer_chars=app.config.social_buffer_chars,
-        attention_threshold=app.config.social_attention_threshold,
         engagement_seconds=app.config.social_engagement_seconds,
         cooldown_seconds=app.config.social_cooldown_seconds,
         budget_capacity=app.config.social_budget_capacity,
         budget_refill_per_hour=app.config.social_budget_refill_per_hour,
         direct_burst=app.config.social_direct_burst,
         direct_refill_per_minute=app.config.social_direct_refill_per_minute,
+        social_posture=social_posture,
+        ai_chain_limit=getattr(app.config, "social_ai_chain_limit", 4),
     )
     register_commands(tree, app, voice_sessions, social_presence=social_presence)
     message_index: dict[str, dict[str, tuple[str, str]]] = defaultdict(dict)
@@ -253,7 +275,13 @@ def build_bot(app: CompanionApp) -> discord.Client:
 
     @client.event
     async def on_message(message: discord.Message) -> None:
-        if message.author == client.user or message.author.bot:
+        author_kind = _social_author_kind(
+            author_id=int(message.author.id),
+            is_bot=bool(message.author.bot),
+            is_self=message.author == client.user,
+            resident_user_ids=getattr(app.config, "social_resident_user_ids", ()),
+        )
+        if author_kind is None:
             return
         mentioned = client.user is not None and client.user in message.mentions
         is_dm = message.guild is None
@@ -275,6 +303,12 @@ def build_bot(app: CompanionApp) -> discord.Client:
             mode = "private"
         else:
             mode = app.config.channel_mode(int(message.channel.id))
+        if author_kind == "ai_resident" and mode != "social":
+            return
+        if author_kind == "ai_resident":
+            # Resident peers use the ambient gate and its loop protection even
+            # when they mention this resident directly.
+            direct_trigger = None
         is_partner = bool(
             app.config.partner_user_id
             and int(message.author.id) == app.config.partner_user_id
@@ -310,6 +344,7 @@ def build_bot(app: CompanionApp) -> discord.Client:
                     message_id=str(message.id),
                     author_id=str(message.author.id),
                     author_name=str(message.author.display_name),
+                    author_kind=author_kind,
                     content=message.content,
                 ),
                 direct_trigger=direct_trigger,
@@ -326,7 +361,8 @@ def build_bot(app: CompanionApp) -> discord.Client:
             or (bool(app.config.partner_user_id) and not is_partner)
         )
         display = (
-            f"[{message.author.display_name}]: {text}"
+            f"[{'AI resident ' if author_kind == 'ai_resident' else ''}"
+            f"{message.author.display_name}]: {text}"
             if identify_author and text
             else text
         )
@@ -367,6 +403,7 @@ def build_bot(app: CompanionApp) -> discord.Client:
                         surface=surface,
                         author_id=str(message.author.id),
                         author_name=str(message.author.display_name),
+                        author_kind=author_kind,
                         trigger=route.trigger,
                         source_id=f"discord-message:{message.id}",
                         disclosure_scope=disclosure_scope,
@@ -378,6 +415,7 @@ def build_bot(app: CompanionApp) -> discord.Client:
                         provenance=provenance,
                         ambient_context=route.ambient_context,
                         store_history=not route.discretionary,
+                        discretionary_social=route.discretionary,
                     )
                 finally:
                     if typing is not None:
@@ -389,6 +427,8 @@ def build_bot(app: CompanionApp) -> discord.Client:
                 reply = sanitize_outgoing(reply)
                 if route.discretionary:
                     social_presence.clear_inflight(channel_key)
+                    if not reply.strip():
+                        return
                 sent = None
                 if len(reply) <= 2000:
                     sent = await message.reply(reply)
@@ -407,7 +447,10 @@ def build_bot(app: CompanionApp) -> discord.Client:
                         )
                     message_index[channel_key][str(sent.id)] = (store_text, reply)
                     if disclosure_scope == "public":
-                        social_presence.mark_response(channel_key)
+                        social_presence.mark_response(
+                            channel_key,
+                            source_author_kind=route.source_author_kind,
+                        )
         finally:
             if route.discretionary:
                 social_presence.clear_inflight(channel_key)

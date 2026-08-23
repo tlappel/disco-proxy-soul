@@ -107,14 +107,23 @@ shared-room self. Private identity and always-on documents are not assumed safe
 for community use. If no public layer exists, addressed turns use only the
 minimal defensive guest prompt and ambient attention stays disabled.
 
+An optional `social_posture.json` supplies the local gate with a small,
+public-safe participation card. It contains named `0`–`1` traits and a short
+description; it is not private identity or memory. The example persona shows
+the format. Absence means no special posture is supplied.
+
 Social ambient processing is off by default. With
 `SOCIAL_AMBIENT_ENABLED=true`, the host requires loopback Ollama, confirms the
 configured local attention model exists, and successfully posts a public
 notice before retaining or processing ambient text in that channel. The local
-gate sees only bounded human text—never attachments, bot messages, DMs, or
-private rooms—and returns `speak`, `wait`, or `ignore`. The RAM-only buffer is
-not history or durable memory. When the gate chooses `speak`, a bounded public
-excerpt reaches `MODEL_SOCIAL`, which defaults to the canonical primary model.
+gate sees bounded text labeled as human or approved AI resident—never
+attachments, unknown utility bots, DMs, or private rooms—and returns
+`consider`, `wait`, or `ignore`. `consider` means the public situation is worth
+showing the resident; it does not command a reply. The canonical resident model
+may return `<NO_RESPONSE>` when it has nothing genuine to add. That marker is
+not delivered or recorded. The RAM-only buffer is not history or durable
+memory. A considered opening reaches `MODEL_SOCIAL`, which defaults to the
+canonical primary model.
 Notice failure, local-model failure, stale bursts, cooldown, or depleted
 discretionary budget all fail closed to silence. Mentions and replies remain
 available.
@@ -126,26 +135,29 @@ ollama pull qwen3:1.7b
 python -m disco_proxy_soul.adapters.ollama_attention
 ```
 
-The probe runs nine small `ignore`, `wait`, and `speak` examples and reports
-each local decision, confidence, tokens, and model duration. It exits nonzero
-when the safe boundary does not match: silence examples must never produce
-`speak`, and genuine openings must produce `speak`. Exact `ignore` versus
-`wait` labels remain visible diagnostics but currently have the same silent
-runtime behavior.
+The probe checks clear social rules such as explicit requests for space,
+unfinished thoughts, claimed questions, direct invitations, and AI-resident
+identity. Subjective public banter is printed for observation rather than
+forced into a pass/fail answer. The model's self-reported confidence is shown
+for diagnosis but does not activate or suppress a response.
 
-For an unengaged room, a deterministic final guard requires the latest message
-to contain a whole-room invitation, a request for another perspective, or the
-configured companion name before a local-model `speak` decision is honored.
-Once the companion is already engaged, the local model may continue the active
-exchange without that extra opening phrase.
+Set `SOCIAL_RESIDENT_USER_IDS` to the Discord IDs of other AI residents that
+may be heard in social rooms. Naomi ignores herself and unknown bot accounts.
+Approved residents still use the ambient gate even when they mention her, and
+`SOCIAL_AI_CHAIN_LIMIT` stops unattended AI reply loops until a human speaks.
 
-The discretionary budget refills gradually. As it drains, the confidence
-threshold and cooldown rise; when empty, the room becomes addressed-only rather
-than muting the companion entirely. `/social-status` reports local gate calls,
+The discretionary budget refills gradually. As it drains, the cooldown rises;
+when empty, the room becomes addressed-only rather than muting the companion
+entirely. `/social-status` reports local gate calls,
 decisions, cancellations, tokens, latency, suppressions, and current balance.
 Direct public summons use a separate per-user replenishing allowance. Sustained
 mention spam receives an hourglass reaction without invoking cognition; private
 partner rooms do not consume that allowance.
+
+`/social-door` sets a session-only, expiring availability of `unavailable`,
+`listening`, `open`, or `seeking`, with an optional public-safe note. This is a
+prototype control surface. In connected mode the resident/Brainstem should own
+and publish this state; Disco must not create a second durable mood store.
 
 Cross-room recents default to twelve messages, 4,000 characters, and two hours.
 Tune those ceilings with `CROSS_SURFACE_RECENT_MESSAGES`,
@@ -163,6 +175,7 @@ What ships in `personas/example/`:
 personas/example/
   identity.md          # who they are — required
   manifest.json        # names, optional character card, which docs are always-on
+  social_posture.json  # optional public-safe social tendencies for local attention
   voice.md             # how they write (host default if you omit this)
   facts.seed.json      # durable facts about you (copied into data/ on first run)
   docs/
@@ -222,6 +235,8 @@ on first startup.
 | Command | Does |
 |---|---|
 | `/status` | Memory window, chunk count, moments, journal, model |
+| `/social-status` | Local attention, door sign, throttling, and loop-protection status |
+| `/social-door` | Set temporary public availability for this process |
 | `/history-status` | Rolling history counts by channel |
 | `/memories` | Last stored memory chunks |
 | `/moments` | Host and partner highlights |

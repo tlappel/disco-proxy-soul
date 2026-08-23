@@ -61,6 +61,7 @@ class ConfigTests(unittest.TestCase):
             "WATCH_CHANNEL_ID": "11",
             "ACTIVE_CHANNEL_IDS": "22",
             "SOCIAL_CHANNEL_IDS": "33",
+            "SOCIAL_RESIDENT_USER_IDS": "700, 701,700",
             "ADDRESSED_CHANNEL_IDS": "44",
             "IGNORED_CHANNEL_IDS": "55",
             "MODEL_SOCIAL": "xai:grok-4.6",
@@ -73,6 +74,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.channel_mode(44), "addressed")
         self.assertEqual(config.channel_mode(55), "ignored")
         self.assertEqual(config.channel_mode(66), "addressed")
+        self.assertEqual(config.social_resident_user_ids, (700, 701))
         self.assertEqual(config.social_ref(), ("xai", "grok-4.6"))
         self.assertFalse(config.social_ambient_enabled)
 

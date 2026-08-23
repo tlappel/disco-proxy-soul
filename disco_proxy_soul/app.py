@@ -32,7 +32,7 @@ from .models.factory import build_router, catalog_for
 from .outreach import OutreachState
 from .persona.loader import load_persona
 from .persona.schema import PersonaPackage
-from .prompt import build_system_prompt
+from .prompt import NO_RESPONSE_TOKEN, build_system_prompt
 from .safety import sanitize_incoming_text, sanitize_outgoing
 
 
@@ -142,6 +142,7 @@ class CompanionApp:
         provenance: TurnProvenance | None = None,
         ambient_context: str = "",
         store_history: bool = True,
+        discretionary_social: bool = False,
     ) -> str:
         text = sanitize_incoming_text(user_text)
         continuity_id = None
@@ -196,6 +197,7 @@ class CompanionApp:
             cross_surface_recent=cross_surface_recent,
             include_private_context=include_private_context,
             ambient_context=ambient_context,
+            discretionary_social=discretionary_social,
         )
         history = self.history.get(channel_id)
         if not include_private_context:
@@ -236,6 +238,8 @@ class CompanionApp:
                 else getattr(self.config, "social_response_max_tokens", 600)
             ),
         )
+        if discretionary_social and reply.strip() == NO_RESPONSE_TOKEN:
+            return ""
         if not reply.strip():
             print("[api] empty reply after tool loop — nothing stored")
             return "That one got away from me mid-thought — say it again for me?"

@@ -155,12 +155,12 @@ class RuntimeConfig:
     cross_surface_recent_minutes: int = 120
     social_model: str = ""
     social_channel_ids: tuple[int, ...] = ()
+    social_resident_user_ids: tuple[int, ...] = ()
     addressed_channel_ids: tuple[int, ...] = ()
     ignored_channel_ids: tuple[int, ...] = ()
     social_debounce_seconds: float = 3.0
     social_buffer_messages: int = 12
     social_buffer_chars: int = 4000
-    social_attention_threshold: float = 0.82
     social_engagement_seconds: float = 120.0
     social_cooldown_seconds: float = 30.0
     social_budget_capacity: float = 6.0
@@ -175,6 +175,7 @@ class RuntimeConfig:
     ollama_base_url: str = "http://127.0.0.1:11434"
     social_direct_burst: int = 3
     social_direct_refill_per_minute: float = 2.0
+    social_ai_chain_limit: int = 4
 
     @property
     def automatic_response_channel_ids(self) -> frozenset[int]:
@@ -234,6 +235,9 @@ class RuntimeConfig:
         )
         social_channel_ids = _discord_ids(
             "SOCIAL_CHANNEL_IDS", os.getenv("SOCIAL_CHANNEL_IDS")
+        )
+        social_resident_user_ids = _discord_ids(
+            "SOCIAL_RESIDENT_USER_IDS", os.getenv("SOCIAL_RESIDENT_USER_IDS")
         )
         addressed_channel_ids = _discord_ids(
             "ADDRESSED_CHANNEL_IDS", os.getenv("ADDRESSED_CHANNEL_IDS")
@@ -441,6 +445,7 @@ class RuntimeConfig:
             ),
             social_model=(os.getenv("MODEL_SOCIAL") or primary_default).strip(),
             social_channel_ids=social_channel_ids,
+            social_resident_user_ids=social_resident_user_ids,
             addressed_channel_ids=addressed_channel_ids,
             ignored_channel_ids=ignored_channel_ids,
             social_debounce_seconds=_bounded_float(
@@ -463,13 +468,6 @@ class RuntimeConfig:
                 4_000,
                 200,
                 20_000,
-            ),
-            social_attention_threshold=_bounded_float(
-                "SOCIAL_ATTENTION_THRESHOLD",
-                os.getenv("SOCIAL_ATTENTION_THRESHOLD"),
-                0.82,
-                0.5,
-                0.99,
             ),
             social_engagement_seconds=_bounded_float(
                 "SOCIAL_ENGAGEMENT_SECONDS",
@@ -556,6 +554,13 @@ class RuntimeConfig:
                 2.0,
                 0.1,
                 60.0,
+            ),
+            social_ai_chain_limit=_bounded_int(
+                "SOCIAL_AI_CHAIN_LIMIT",
+                os.getenv("SOCIAL_AI_CHAIN_LIMIT"),
+                4,
+                2,
+                20,
             ),
         )
 
