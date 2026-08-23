@@ -8,6 +8,7 @@ discord.py[voice]>=2.7.1,<2.8
 discord-ext-voice-recv @ git+https://github.com/porgeeratad/discord-ext-voice-recv.git@03dd1e2dafe85522cc458441cd5b143b136ac836
 python-dotenv
 aiohttp
+httpx
 openai
 anthropic
 tzdata
