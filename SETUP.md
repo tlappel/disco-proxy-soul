@@ -126,6 +126,10 @@ ADDRESSED_CHANNEL_IDS=mention-only-channel-id
 IGNORED_CHANNEL_IDS=channel-the-bot-must-ignore
 ```
 
+Unlisted server channels receive no response, even when someone mentions the
+companion. Add a room to `ADDRESSED_CHANNEL_IDS` explicitly when summons should
+work there.
+
 Social and addressed rooms use only an explicit public persona document. Put a
 `.md` file under `PERSONA_DIR/docs/public/`; private identity, facts, memories,
 and journal context are not sent into public turns.

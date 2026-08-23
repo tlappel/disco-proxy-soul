@@ -577,12 +577,13 @@ available in shared rooms. Joined public history is provenance-labeled,
 public-only, bounded, and never compressed into durable memory.
 
 Deterministic addressed behavior is the default. Optional ambient attention is
-local-only through loopback Ollama with `qwen3:1.7b`; it cannot retain or process
+local-only through loopback Ollama with `qwen3:4b`; it cannot retain or process
 ambient text until a public channel notice succeeds. The local gate receives a
-bounded RAM-only human-text buffer and returns `speak`, `wait`, or `ignore` with
-confidence. Bursts supersede stale decisions, new human speech cancels in-flight
+bounded RAM-only public-room buffer and returns `consider`, `wait`, or `ignore`.
+Its self-reported confidence is diagnostic only. Bursts supersede stale
+decisions, new human speech cancels in-flight
 discretionary cognition, and failures close to silence. A replenishing budget
-raises thresholds and cooldowns gradually before falling back to addressed-only.
+raises cooldowns gradually before falling back to addressed-only.
 A separate replenishing per-user allowance protects direct public mentions;
 sustained spam receives a lightweight reaction without a cognition call.
 
@@ -605,8 +606,8 @@ spawn an unbounded continuation chain.
 
 ## Phase 5E-C — live social tuning
 
-Tune participation thresholds, human-first delay, engagement lease, response
-length, and discretionary refill from observed `speak`, `wait`, `ignore`, stale,
+Tune participation policy, human-first delay, engagement lease, response
+length, and discretionary refill from observed `consider`, `wait`, `ignore`, stale,
 cancelled, cooldown, and budget outcomes. Optimize for high precision when
 entering without a summons; a quiet miss is cheaper than socially intrusive
 false positives.

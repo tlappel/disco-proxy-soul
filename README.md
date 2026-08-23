@@ -94,7 +94,7 @@ Channel modes are explicit:
 | `SOCIAL_CHANNEL_IDS` | Public projection; direct address works, optional local ambient attention may join |
 | `ADDRESSED_CHANNEL_IDS` | Public projection; mention, reply, or clear name-address only |
 | `IGNORED_CHANNEL_IDS` | No response |
-| Unlisted server channel | Addressed behavior |
+| Unlisted server channel | No response |
 
 A channel ID may appear in only one mode. DMs from the configured partner are
 private. Public turns never receive private identity, facts, recall, cross-room

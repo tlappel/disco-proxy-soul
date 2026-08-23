@@ -203,7 +203,9 @@ class RuntimeConfig:
             return "social"
         if channel_id in self.automatic_response_channel_ids:
             return "private"
-        return "addressed"
+        if channel_id in self.addressed_channel_ids:
+            return "addressed"
+        return "ignored"
 
     @classmethod
     def from_env(cls) -> "RuntimeConfig":

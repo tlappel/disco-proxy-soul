@@ -80,7 +80,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.channel_mode(33), "social")
         self.assertEqual(config.channel_mode(44), "addressed")
         self.assertEqual(config.channel_mode(55), "ignored")
-        self.assertEqual(config.channel_mode(66), "addressed")
+        self.assertEqual(config.channel_mode(66), "ignored")
         self.assertEqual(config.social_resident_user_ids, (700, 701))
         self.assertEqual(config.social_ref(), ("xai", "grok-4.6"))
         self.assertFalse(config.social_ambient_enabled)
