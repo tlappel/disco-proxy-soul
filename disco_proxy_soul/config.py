@@ -205,7 +205,7 @@ class RuntimeConfig:
             return "private"
         if channel_id in self.addressed_channel_ids:
             return "addressed"
-        return "ignored"
+        return "unlisted"
 
     @classmethod
     def from_env(cls) -> "RuntimeConfig":

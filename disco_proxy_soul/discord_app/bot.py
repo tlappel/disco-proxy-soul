@@ -139,6 +139,14 @@ def _message_policy(
 ) -> _MessagePolicy | None:
     if mode == "ignored":
         return None
+    if mode == "unlisted":
+        # Preserve main's legacy fallback without opening every visible room to
+        # guests or adding the newer plain-name trigger outside an allowlist.
+        if direct_trigger not in {"mention", "reply"}:
+            return None
+        if partner_configured and not is_partner:
+            return None
+        return _MessagePolicy("immediate", "private", direct_trigger)
     if mode == "private":
         if partner_configured and not is_partner:
             return None

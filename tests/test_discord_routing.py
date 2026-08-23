@@ -61,6 +61,44 @@ class DiscordRoutingTests(unittest.TestCase):
         self.assertEqual(addressed_guest.route_kind, "immediate")
         self.assertEqual(addressed_guest.disclosure_scope, "public")
 
+    def test_unlisted_room_preserves_partner_mentions_without_opening_to_guests(self):
+        partner = _message_policy(
+            mode="unlisted",
+            partner_configured=True,
+            is_partner=True,
+            direct_trigger="mention",
+            private_active=False,
+        )
+        self.assertEqual(partner.route_kind, "immediate")
+        self.assertEqual(partner.disclosure_scope, "private")
+        self.assertIsNone(
+            _message_policy(
+                mode="unlisted",
+                partner_configured=True,
+                is_partner=False,
+                direct_trigger="mention",
+                private_active=False,
+            )
+        )
+        open_install = _message_policy(
+            mode="unlisted",
+            partner_configured=False,
+            is_partner=False,
+            direct_trigger="reply",
+            private_active=False,
+        )
+        self.assertEqual(open_install.route_kind, "immediate")
+        self.assertEqual(open_install.disclosure_scope, "private")
+        self.assertIsNone(
+            _message_policy(
+                mode="unlisted",
+                partner_configured=True,
+                is_partner=True,
+                direct_trigger="name-address",
+                private_active=False,
+            )
+        )
+
     def test_social_notice_discloses_local_gate_and_selected_cloud_context(self):
         notice = social_ambient_notice(
             "Naomi", attention_model="qwen3:1.7b", response_provider="xai"
