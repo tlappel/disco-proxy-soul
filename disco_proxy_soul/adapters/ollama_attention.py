@@ -37,7 +37,7 @@ class OllamaAttentionConfig:
     timeout_seconds: float = 30.0
     threads: int = 4
     context_tokens: int = 2048
-    keep_alive: str = "-1"
+    keep_alive: str | int = -1
 
     def __post_init__(self) -> None:
         parsed = urlparse(self.base_url)
@@ -47,6 +47,12 @@ class OllamaAttentionConfig:
             raise ValueError("Ollama attention model is required")
         if not self.companion_name.strip():
             raise ValueError("Ollama attention companion name is required")
+        if isinstance(self.keep_alive, str):
+            normalized = self.keep_alive.strip()
+            if not normalized:
+                raise ValueError("Ollama attention keep-alive is required")
+            if normalized in {"-1", "0"}:
+                object.__setattr__(self, "keep_alive", int(normalized))
 
 
 class OllamaAttentionJudge:
@@ -232,8 +238,16 @@ class OllamaAttentionJudge:
                     f"{self.config.base_url}/api/chat", json=payload
                 ) as response:
                     if response.status != 200:
+                        detail = ""
+                        try:
+                            failure = await response.json()
+                        except (aiohttp.ContentTypeError, ValueError):
+                            failure = None
+                        if isinstance(failure, dict):
+                            detail = str(failure.get("error") or "").strip()[:300]
+                        suffix = f": {detail}" if detail else ""
                         raise OllamaAttentionError(
-                            f"Ollama attention returned HTTP {response.status}"
+                            f"Ollama attention returned HTTP {response.status}{suffix}"
                         )
                     result = await response.json()
         except TimeoutError as exc:
@@ -347,7 +361,7 @@ def main() -> None:
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--threads", type=int, default=4)
     parser.add_argument("--context-tokens", type=int, default=2048)
-    parser.add_argument("--keep-alive", default="-1")
+    parser.add_argument("--keep-alive", default=-1)
     parser.add_argument(
         "--social-posture",
         default=(

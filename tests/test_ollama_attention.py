@@ -20,7 +20,8 @@ class OllamaAttentionTests(unittest.IsolatedAsyncioTestCase):
         config = OllamaAttentionConfig()
         self.assertEqual(config.model, "qwen3:4b")
         self.assertEqual(config.timeout_seconds, 30.0)
-        self.assertEqual(config.keep_alive, "-1")
+        self.assertEqual(config.keep_alive, -1)
+        self.assertEqual(OllamaAttentionConfig(keep_alive="-1").keep_alive, -1)
 
     def test_remote_urls_are_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "loopback"):
@@ -65,6 +66,7 @@ class OllamaAttentionTests(unittest.IsolatedAsyncioTestCase):
         payload = judge._post_chat.await_args.args[0]
         self.assertFalse(payload["think"])
         self.assertFalse(payload["stream"])
+        self.assertEqual(payload["keep_alive"], -1)
         self.assertEqual(payload["options"]["num_thread"], 4)
         self.assertEqual(payload["options"]["num_ctx"], 2048)
         self.assertEqual(
