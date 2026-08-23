@@ -32,12 +32,12 @@ class AttentionDecision:
 @dataclass(frozen=True)
 class OllamaAttentionConfig:
     base_url: str = "http://127.0.0.1:11434"
-    model: str = "qwen3:1.7b"
+    model: str = "qwen3:4b"
     companion_name: str = "Companion"
-    timeout_seconds: float = 15.0
+    timeout_seconds: float = 30.0
     threads: int = 4
     context_tokens: int = 2048
-    keep_alive: str = "30m"
+    keep_alive: str = "-1"
 
     def __post_init__(self) -> None:
         parsed = urlparse(self.base_url)
@@ -342,12 +342,12 @@ async def _run_probe(args: argparse.Namespace) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Probe local Ollama social attention")
     parser.add_argument("--base-url", default="http://127.0.0.1:11434")
-    parser.add_argument("--model", default="qwen3:1.7b")
+    parser.add_argument("--model", default="qwen3:4b")
     parser.add_argument("--companion-name", default="Naomi")
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--threads", type=int, default=4)
     parser.add_argument("--context-tokens", type=int, default=2048)
-    parser.add_argument("--keep-alive", default="30m")
+    parser.add_argument("--keep-alive", default="-1")
     parser.add_argument(
         "--social-posture",
         default=(

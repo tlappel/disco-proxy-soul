@@ -17,6 +17,13 @@ from disco_proxy_soul.prompt import build_system_prompt
 
 
 class ConfigTests(unittest.TestCase):
+    def test_social_attention_defaults_to_supported_warm_gate(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            config = RuntimeConfig.from_env()
+        self.assertEqual(config.social_attention_model, "qwen3:4b")
+        self.assertEqual(config.social_attention_timeout_seconds, 30.0)
+        self.assertEqual(config.social_attention_keep_alive, "-1")
+
     def test_parse_model_ref(self) -> None:
         self.assertEqual(parse_model_ref("grok-4.6", "xai"), ("xai", "grok-4.6"))
         self.assertEqual(parse_model_ref("openai:gpt-4.1", "xai"), ("openai", "gpt-4.1"))

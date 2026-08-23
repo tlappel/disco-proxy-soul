@@ -168,10 +168,11 @@ class RuntimeConfig:
     social_history_messages: int = 24
     social_response_max_tokens: int = 600
     social_ambient_enabled: bool = False
-    social_attention_model: str = "qwen3:1.7b"
-    social_attention_timeout_seconds: float = 15.0
+    social_attention_model: str = "qwen3:4b"
+    social_attention_timeout_seconds: float = 30.0
     social_attention_threads: int = 4
     social_attention_context_tokens: int = 2048
+    social_attention_keep_alive: str = "-1"
     ollama_base_url: str = "http://127.0.0.1:11434"
     social_direct_burst: int = 3
     social_direct_refill_per_minute: float = 2.0
@@ -515,12 +516,12 @@ class RuntimeConfig:
                 os.getenv("SOCIAL_AMBIENT_ENABLED"), False
             ),
             social_attention_model=os.getenv(
-                "SOCIAL_ATTENTION_MODEL", "qwen3:1.7b"
+                "SOCIAL_ATTENTION_MODEL", "qwen3:4b"
             ).strip(),
             social_attention_timeout_seconds=_bounded_float(
                 "SOCIAL_ATTENTION_TIMEOUT_SECONDS",
                 os.getenv("SOCIAL_ATTENTION_TIMEOUT_SECONDS"),
-                15.0,
+                30.0,
                 1.0,
                 120.0,
             ),
@@ -538,6 +539,9 @@ class RuntimeConfig:
                 512,
                 8192,
             ),
+            social_attention_keep_alive=os.getenv(
+                "SOCIAL_ATTENTION_KEEP_ALIVE", "-1"
+            ).strip(),
             ollama_base_url=os.getenv(
                 "OLLAMA_BASE_URL", "http://127.0.0.1:11434"
             ).strip(),

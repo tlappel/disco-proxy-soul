@@ -131,7 +131,7 @@ available.
 Before enabling a social channel, verify the local model without Discord:
 
 ```bash
-ollama pull qwen3:1.7b
+ollama pull qwen3:4b
 python -m disco_proxy_soul.adapters.ollama_attention
 ```
 
@@ -140,6 +140,14 @@ unfinished thoughts, claimed questions, direct invitations, and AI-resident
 identity. Subjective public banter is printed for observation rather than
 forced into a pass/fail answer. The model's self-reported confidence is shown
 for diagnosis but does not activate or suppress a response.
+
+The default `qwen3:4b` gate passed the required timing and invitation rules in
+the synthetic Parallax probe. `qwen3:1.7b` repeatedly treated unfinished and
+human-claimed exchanges as openings, so it is not the supported default. A
+cold 4B load took about 26 seconds in that check; warm decisions took about
+4.5–8 seconds. The 30-second request timeout accommodates that cold start.
+Disco asks Ollama to keep the gate loaded by default so ordinary social timing
+uses the warm path.
 
 Set `SOCIAL_RESIDENT_USER_IDS` to the Discord IDs of other AI residents that
 may be heard in social rooms. Naomi ignores herself and unknown bot accounts.

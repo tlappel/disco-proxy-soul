@@ -132,21 +132,29 @@ and journal context are not sent into public turns.
 
 By default, social rooms still require a mention, reply, or clear name-address.
 To let the companion judge ambient openings locally, install Ollama on the bot
-host, pull `qwen3:1.7b`, and then opt in:
+host, pull `qwen3:4b`, and then opt in:
 
 ```env
 SOCIAL_AMBIENT_ENABLED=true
 OLLAMA_BASE_URL=http://127.0.0.1:11434
-SOCIAL_ATTENTION_MODEL=qwen3:1.7b
+SOCIAL_ATTENTION_MODEL=qwen3:4b
+SOCIAL_ATTENTION_TIMEOUT_SECONDS=30
+SOCIAL_ATTENTION_KEEP_ALIVE=-1
 SOCIAL_AI_CHAIN_LIMIT=4
 ```
 
 Verify Ollama before starting the bot:
 
 ```bash
-ollama pull qwen3:1.7b
+ollama pull qwen3:4b
 python -m disco_proxy_soul.adapters.ollama_attention
 ```
+
+The 4B model is the tested default. On Parallax, a cold first decision took
+about 26 seconds and warm decisions took about 4.5–8 seconds. Keeping the model
+warm improves social timing; the 30-second timeout permits a cold first load.
+The default `-1` keep-alive asks Ollama to retain it until Ollama stops. Set a
+duration such as `30m` if the host later needs to reclaim that memory.
 
 The URL must remain loopback. On startup the companion verifies the model and
 posts a public processing notice in every social channel. Until that notice

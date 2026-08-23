@@ -16,6 +16,12 @@ from disco_proxy_soul.adapters.ollama_attention import (
 
 
 class OllamaAttentionTests(unittest.IsolatedAsyncioTestCase):
+    def test_supported_defaults_use_warm_four_billion_parameter_gate(self) -> None:
+        config = OllamaAttentionConfig()
+        self.assertEqual(config.model, "qwen3:4b")
+        self.assertEqual(config.timeout_seconds, 30.0)
+        self.assertEqual(config.keep_alive, "-1")
+
     def test_remote_urls_are_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "loopback"):
             OllamaAttentionConfig(base_url="https://models.example.com")

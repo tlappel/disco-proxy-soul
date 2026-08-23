@@ -197,6 +197,7 @@ def build_bot(app: CompanionApp) -> discord.Client:
             timeout_seconds=app.config.social_attention_timeout_seconds,
             threads=app.config.social_attention_threads,
             context_tokens=app.config.social_attention_context_tokens,
+            keep_alive=app.config.social_attention_keep_alive,
         )
     )
     social_presence = SocialPresence(
