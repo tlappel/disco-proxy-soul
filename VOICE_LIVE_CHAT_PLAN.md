@@ -592,8 +592,39 @@ Qwen owns attention only. When it chooses a real opening, the existing
 reply exactly once from a bounded public excerpt. The model defaults to the
 primary cognition model; it is not a replacement persona mind. `/social-status`
 exposes decisions, cancellations, local tokens/latency, suppressions, and
-budget. The complete automated suite passes `246/246`; local Ollama and live
-social-room acceptance remain.
+budget. The complete automated suite passes `260/260`.
+
+### Phase 5E live acceptance findings — 2026-08-23
+
+A controlled shared-room run accepted direct human address, admitted an
+approved AI resident without an unattended reply loop, let the local gate wait
+for the room to settle, and produced a successful gate-mediated resident
+response without a human direct summons.
+The validated 4B gate completed the accepted live decision with 1,199 input
+tokens in 12.4 seconds on the CPU host.
+
+The run also exposed four follow-ups, in priority order:
+
+1. A public exchange the resident participates in must become the resident's
+   own provenance-bearing experience and be available later in an authorized
+   private room. A temporary local-room transcript or author-only continuity
+   key is not enough. Everthread owns this continuity; Disco should not grow a
+   second memory system to compensate.
+2. A natural-language request for space must outrank the direct-address route.
+   The model probe understands this rule, but a name-address currently takes
+   the immediate route before the ambient gate can apply it.
+3. Long public messages can exceed the CPU gate's practical timing envelope.
+   One 1,530-token request reached the 30-second timeout before generation.
+   The live configuration was narrowed to six messages and 1,600 characters
+   with a 45-second failure ceiling. Persist the accepted bounds and expose the
+   last gate failure reason rather than reporting only a counter.
+4. Public processing notices are confirmed only in process memory and repeat
+   after every restart. Persist an idempotent receipt keyed by resident,
+   channel, and notice-policy version; repost only when that version changes or
+   an operator explicitly requests it.
+
+These are acceptance findings, not permission to move resident cognition,
+memory, or disclosure policy into the Discord body.
 
 ## Phase 5E-B — conversational cadence and initiative
 
