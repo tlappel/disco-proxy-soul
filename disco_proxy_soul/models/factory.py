@@ -41,6 +41,7 @@ def build_router(config: RuntimeConfig) -> ModelRouter:
     for tier, (provider_name, model) in (
         ("primary", config.primary_ref()),
         ("cheap", config.cheap_ref()),
+        ("social", config.social_ref()),
         ("medium", config.cheap_ref()),
     ):
         provider = providers.get(provider_name)

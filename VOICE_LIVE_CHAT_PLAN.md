@@ -552,7 +552,7 @@ ambiguous frames. The first run reported 47 clock repairs and the second 21;
 each also survived one isolated corrupt Discord frame through the existing
 guard. The normal, non-accelerated bot remained online after acceptance.
 
-## Phase 5E — selective social text presence
+## Phase 5E-A — selective social text presence (implementation checkpoint)
 
 Add an opt-in social channel mode on top of Phase 5D's identity boundary. Keep
 a short provenance-rich ambient buffer in memory, not durable companion
@@ -570,6 +570,47 @@ Ambient messages do not become Naomi's conversation history or durable memory
 merely because she could see them. Guest exchanges stay local and cannot access
 the private partner continuity. Tune the participation policy live before
 allowing unsolicited entry into ordinary human conversation.
+
+Implementation uses explicit private, social, addressed, and ignored channel
+allowlists. A `docs/public/` persona layer is the only authored identity context
+available in shared rooms. Joined public history is provenance-labeled,
+public-only, bounded, and never compressed into durable memory.
+
+Deterministic addressed behavior is the default. Optional ambient attention is
+local-only through loopback Ollama with `qwen3:4b`; it cannot retain or process
+ambient text until a public channel notice succeeds. The local gate receives a
+bounded RAM-only public-room buffer and returns `consider`, `wait`, or `ignore`.
+Its self-reported confidence is diagnostic only. Bursts supersede stale
+decisions, new human speech cancels in-flight
+discretionary cognition, and failures close to silence. A replenishing budget
+raises cooldowns gradually before falling back to addressed-only.
+A separate replenishing per-user allowance protects direct public mentions;
+sustained spam receives a lightweight reaction without a cognition call.
+
+Qwen owns attention only. When it chooses a real opening, the existing
+`CompanionApp.respond()` path and canonical `MODEL_SOCIAL` cognition produce the
+reply exactly once from a bounded public excerpt. The model defaults to the
+primary cognition model; it is not a replacement persona mind. `/social-status`
+exposes decisions, cancellations, local tokens/latency, suppressions, and
+budget. The complete automated suite passes `246/246`; local Ollama and live
+social-room acceptance remain.
+
+## Phase 5E-B — conversational cadence and initiative
+
+After social attention is accepted, add response plans that distinguish one
+thought expressed across several messages from a genuinely later afterthought.
+Python owns delay, expiration, cancellation, recursion limits, and delivery.
+Every emitted utterance has one provenance-linked cause and one history effect.
+New human speech cancels or reconsiders pending thoughts; a continuation cannot
+spawn an unbounded continuation chain.
+
+## Phase 5E-C — live social tuning
+
+Tune participation policy, human-first delay, engagement lease, response
+length, and discretionary refill from observed `consider`, `wait`, `ignore`, stale,
+cancelled, cooldown, and budget outcomes. Optimize for high precision when
+entering without a summons; a quiet miss is cheaper than socially intrusive
+false positives.
 
 ## Phase 6 — multi-speaker voice (deferred product decision)
 

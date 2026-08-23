@@ -22,7 +22,9 @@ from .models.contracts import (
     ContentPart,
     ModelMessage,
     ModelRequest,
+    ModelResponse,
     ModelRouter,
+    ModelTier,
     ToolCall,
     ToolSpec,
 )
@@ -30,7 +32,7 @@ from .models.factory import build_router, catalog_for
 from .outreach import OutreachState
 from .persona.loader import load_persona
 from .persona.schema import PersonaPackage
-from .prompt import build_system_prompt
+from .prompt import NO_RESPONSE_TOKEN, build_system_prompt
 from .safety import sanitize_incoming_text, sanitize_outgoing
 
 
@@ -70,6 +72,7 @@ class CompanionApp:
     _last_message_time: dict[str, datetime] = field(default_factory=dict)
     _cached_recall: dict[str, list[MemoryRecord]] = field(default_factory=dict)
     _compress_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
+    _model_usage: dict[str, dict[str, int]] = field(default_factory=dict)
 
     @classmethod
     def from_env(cls, config: RuntimeConfig | None = None) -> "CompanionApp":
@@ -137,6 +140,9 @@ class CompanionApp:
         recall_source: str = "automatic",
         interaction_mode: str | None = None,
         provenance: TurnProvenance | None = None,
+        ambient_context: str = "",
+        store_history: bool = True,
+        discretionary_social: bool = False,
     ) -> str:
         text = sanitize_incoming_text(user_text)
         continuity_id = None
@@ -160,7 +166,8 @@ class CompanionApp:
             continuity_id=continuity_id,
         )
         include_private_context = (
-            not self.config.partner_user_id or scope.continuity_id is not None
+            (provenance is None or provenance.disclosure_scope != "public")
+            and (not self.config.partner_user_id or scope.continuity_id is not None)
         )
         if parts:
             cleaned: list[ContentPart] = []
@@ -189,8 +196,20 @@ class CompanionApp:
             journal_excerpt=(self.journal.read_tail() if include_private_context else ""),
             cross_surface_recent=cross_surface_recent,
             include_private_context=include_private_context,
+            ambient_context=ambient_context,
+            discretionary_social=discretionary_social,
         )
         history = self.history.get(channel_id)
+        if not include_private_context:
+            history = [
+                item
+                for item in history
+                if (
+                    (stored := TurnProvenance.from_dict(item.get("provenance")))
+                    is not None
+                    and stored.disclosure_scope == "public"
+                )
+            ]
         messages = [
             ModelMessage(role=item["role"], content=item["content"])
             for item in history
@@ -204,13 +223,41 @@ class CompanionApp:
         messages.append(ModelMessage(role="user", content=user_content))
 
         reply = await self._complete_with_tools(
-            messages, system, allow_journal_tools=include_private_context
+            messages,
+            system,
+            allow_journal_tools=include_private_context,
+            tier="primary" if include_private_context else "social",
+            model=(
+                self.primary_model
+                if include_private_context
+                else getattr(self.config, "social_model", "") or self.cheap_model
+            ),
+            max_tokens=(
+                8192
+                if include_private_context
+                else getattr(self.config, "social_response_max_tokens", 600)
+            ),
         )
+        if discretionary_social and reply.strip() == NO_RESPONSE_TOKEN:
+            return ""
         if not reply.strip():
             print("[api] empty reply after tool loop — nothing stored")
             return "That one got away from me mid-thought — say it again for me?"
 
-        self.history.append(channel_id, "user", text, provenance)
+        if store_history:
+            self.record_exchange(channel_id, text, reply, provenance)
+        return reply
+
+    def record_exchange(
+        self,
+        channel_id: str,
+        user_text: str,
+        reply: str,
+        provenance: TurnProvenance | None,
+    ) -> None:
+        """Commit one already-produced exchange exactly once."""
+
+        self.history.append(channel_id, "user", user_text, provenance)
         assistant_provenance = (
             provenance.for_assistant(
                 self.persona.persona_id, self.persona.companion_name
@@ -219,12 +266,25 @@ class CompanionApp:
             else None
         )
         self.history.append(channel_id, "assistant", reply, assistant_provenance)
+        continuity_id = provenance.continuity_id if provenance is not None else None
+        scope = Scope(
+            channel_id=channel_id,
+            persona_id=self.persona.persona_id,
+            continuity_id=continuity_id,
+        )
         self._last_message_time[scope.storage_key] = datetime.now()
         self.outreach.note_activity()
 
-        if len(self.history.get(channel_id)) >= self.config.max_recent:
+        include_private_context = (
+            (provenance is None or provenance.disclosure_scope != "public")
+            and (not self.config.partner_user_id or continuity_id is not None)
+        )
+        if not include_private_context:
+            self.history.trim(
+                channel_id, getattr(self.config, "social_history_messages", 24)
+            )
+        elif len(self.history.get(channel_id)) >= self.config.max_recent:
             asyncio.create_task(self.compress(channel_id))
-        return reply
 
     def _journal_tools(self) -> tuple[ToolSpec, ...]:
         name = self.persona.companion_name
@@ -263,20 +323,24 @@ class CompanionApp:
         system: str,
         max_rounds: int = 4,
         allow_journal_tools: bool = True,
+        tier: ModelTier = "primary",
+        model: str | None = None,
+        max_tokens: int = 8192,
     ) -> str:
         tools = self._journal_tools() if allow_journal_tools else ()
         for _ in range(max_rounds):
             response = await self.models.complete(
-                "primary",
+                tier,
                 ModelRequest(
                     capability="chat",
                     messages=messages,
                     system=system,
-                    model=self.primary_model,
-                    max_tokens=8192,
+                    model=model or self.primary_model,
+                    max_tokens=max_tokens,
                     tools=tools,
                 ),
             )
+            self._observe_model_usage(tier, response)
             if response.tool_calls:
                 messages.append(
                     ModelMessage(
@@ -289,6 +353,18 @@ class CompanionApp:
                 continue
             return sanitize_outgoing(response.text or "")
         return sanitize_outgoing(response.text or "")
+
+    def _observe_model_usage(self, tier: str, response: ModelResponse) -> None:
+        totals = self._model_usage.setdefault(
+            tier, {"calls": 0, "input_tokens": 0, "output_tokens": 0}
+        )
+        totals["calls"] += 1
+        if response.usage is not None:
+            totals["input_tokens"] += response.usage.input_tokens
+            totals["output_tokens"] += response.usage.output_tokens
+
+    def model_usage_snapshot(self) -> dict[str, dict[str, int]]:
+        return {tier: dict(values) for tier, values in self._model_usage.items()}
 
     def _execute_tool_calls(self, calls: tuple[ToolCall, ...]) -> list[ModelMessage]:
         results: list[ModelMessage] = []

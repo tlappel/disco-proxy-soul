@@ -16,6 +16,7 @@ from .schema import (
     PersonaCharacter,
     PersonaDocument,
     PersonaPackage,
+    SocialPosture,
 )
 
 IDENTITY_FILES = {"identity.md", "persona.md", "voice.md"}
@@ -31,6 +32,7 @@ FOLDER_MODES = {
     "always": "always_on",
     "always_on": "always_on",
     "presence": "presence",
+    "public": "public",
     "author": "author",
     "docs": "author",
 }
@@ -82,6 +84,33 @@ def _read_identity(root: Path) -> str:
         f"Required identity file missing: {root / 'identity.md'} "
         f"(or legacy {root / 'persona.md'})"
     )
+
+
+def _load_social_posture(root: Path) -> SocialPosture:
+    path = root / "social_posture.json"
+    data = _read_json(path)
+    if not data:
+        return SocialPosture()
+    raw_traits = data.get("traits", {})
+    if not isinstance(raw_traits, dict):
+        raise PersonaLoadError(f"Social posture traits must be an object: {path}")
+    traits: dict[str, float] = {}
+    for raw_name, raw_value in raw_traits.items():
+        name = str(raw_name).strip().lower().replace(" ", "_")
+        if not name:
+            continue
+        if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
+            raise PersonaLoadError(
+                f"Social posture trait '{name}' must be a number from 0 to 1: {path}"
+            )
+        value = float(raw_value)
+        if not 0.0 <= value <= 1.0:
+            raise PersonaLoadError(
+                f"Social posture trait '{name}' must be between 0 and 1: {path}"
+            )
+        traits[name[:40]] = value
+    description = " ".join(str(data.get("description") or "").split())[:500]
+    return SocialPosture(traits=traits, description=description)
 
 
 def _normalize_mode(raw: Any) -> str | None:
@@ -327,5 +356,6 @@ def load_persona(root: str | Path, persona_id: str | None = None) -> PersonaPack
         documents=documents,
         always_on_docs=derived_always_on,
         character=_load_character(meta),
+        social_posture=_load_social_posture(root_path),
     )
     return apply_host_defaults(package)

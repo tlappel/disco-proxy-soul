@@ -115,8 +115,61 @@ ACTIVE_CHANNEL_IDS=first-channel-id,second-channel-id
 ```
 
 The original watch channel remains the destination for outreach. Active
-channels currently answer every ordinary human message; selective social-room
-participation is a later feature.
+channels answer every ordinary message from the configured partner.
+
+Optional shared-room modes use separate channel allowlists:
+
+```env
+SOCIAL_CHANNEL_IDS=community-channel-id
+SOCIAL_RESIDENT_USER_IDS=approved-resident-bot-user-id
+ADDRESSED_CHANNEL_IDS=mention-only-channel-id
+IGNORED_CHANNEL_IDS=channel-the-bot-must-ignore
+```
+
+In an unlisted server channel, the configured partner retains the legacy ability
+to mention the companion or reply to her message. Guests receive no response.
+Add a room to `ADDRESSED_CHANNEL_IDS` explicitly when public summons should work
+there.
+
+Social and addressed rooms use only an explicit public persona document. Put a
+`.md` file under `PERSONA_DIR/docs/public/`; private identity, facts, memories,
+and journal context are not sent into public turns.
+
+By default, social rooms still require a mention, reply, or clear name-address.
+To let the companion judge ambient openings locally, install Ollama on the bot
+host, pull `qwen3:4b`, and then opt in:
+
+```env
+SOCIAL_AMBIENT_ENABLED=true
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+SOCIAL_ATTENTION_MODEL=qwen3:4b
+SOCIAL_ATTENTION_TIMEOUT_SECONDS=30
+SOCIAL_ATTENTION_KEEP_ALIVE=-1
+SOCIAL_AI_CHAIN_LIMIT=4
+```
+
+Verify Ollama before starting the bot:
+
+```bash
+ollama pull qwen3:4b
+python -m disco_proxy_soul.adapters.ollama_attention
+```
+
+The 4B model is the tested default. On Parallax, a cold first decision took
+about 26 seconds and warm decisions took about 4.5–8 seconds. Keeping the model
+warm improves social timing; the 30-second timeout permits a cold first load.
+The default `-1` keep-alive asks Ollama to retain it until Ollama stops. Set a
+duration such as `30m` if the host later needs to reclaim that memory.
+
+The URL must remain loopback. On startup the companion verifies the model and
+posts a public processing notice in every social channel. Until that notice
+succeeds, no ambient buffer or model judgment occurs. Selected public context
+uses `MODEL_SOCIAL`, which defaults to the primary cognition model. Use
+`/social-status` to inspect decisions, throttling, latency, and local tokens.
+Use `/social-door` to test an expiring `unavailable`, `listening`, `open`, or
+`seeking` door sign. Add `social_posture.json` to the persona package when the
+local gate should consider a public-safe description of the resident's usual
+social tendencies.
 
 Leave `PERSONA_ID=example` and `PERSONA_DIR=personas/example` for the first
 run. You will change those when you add your own persona (step 8).

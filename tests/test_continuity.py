@@ -17,6 +17,7 @@ from disco_proxy_soul.memory.file_backend import FileMemoryBackend
 from disco_proxy_soul.memory.history import ConversationStore
 from disco_proxy_soul.memory.journal import MarkdownLog
 from disco_proxy_soul.models.contracts import ModelResponse
+from disco_proxy_soul.persona.schema import PersonaDocument
 
 
 PARTNER_ID = 770427
@@ -34,6 +35,9 @@ class FakeConfig:
     cross_surface_recent_minutes: int = 120
     max_recent: int = 60
     compress_chunk: int = 10
+    social_model: str = "social-model"
+    social_response_max_tokens: int = 600
+    social_history_messages: int = 24
 
     def continuity_id_for_user(self, user_id):
         try:
@@ -65,9 +69,25 @@ class FakePersona:
         return ()
 
 
+class PublicPersona(FakePersona):
+    @staticmethod
+    def documents_by_mode(mode):
+        if mode != "public":
+            return ()
+        return (
+            PersonaDocument(
+                name="community.md",
+                content="Naomi's public-safe self.",
+                path=Path("community.md"),
+                mode="public",
+            ),
+        )
+
+
 class RecordingModels:
     def __init__(self) -> None:
         self.requests = []
+        self.response_text = "I remember the thread."
 
     async def complete(self, tier, request):
         self.requests.append((tier, request))
@@ -83,7 +103,7 @@ class RecordingModels:
                 provider="fake",
                 model="fake",
             )
-        return ModelResponse(text="I remember the thread.", provider="fake", model="fake")
+        return ModelResponse(text=self.response_text, provider="fake", model="fake")
 
 
 def provenance(
@@ -130,6 +150,7 @@ class ContinuityTests(unittest.IsolatedAsyncioTestCase):
         app._last_message_time = {}
         app._cached_recall = {}
         app._compress_locks = {}
+        app._model_usage = {}
         return app
 
     async def test_partner_recents_cross_surfaces_with_labels_but_guest_does_not(self):
@@ -189,6 +210,115 @@ class ContinuityTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("Private journal line", request.system)
             self.assertIn("GUEST CONVERSATION", request.system)
             self.assertEqual(request.tools, ())
+
+    async def test_public_room_uses_social_model_and_excludes_private_local_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self.make_app(Path(tmp))
+            app.persona = PublicPersona()
+            private = provenance("44", source_id="private")
+            app.history.append("44", "user", "Private local secret", private)
+            public_prior = replace(
+                provenance(
+                    "44", author_id=99, author_name="Alex", source_id="public-prior"
+                ),
+                disclosure_scope="public",
+            )
+            app.history.append("44", "user", "Visible prior turn", public_prior)
+            current = replace(
+                provenance(
+                    "44", author_id=100, author_name="Morgan", source_id="public-now"
+                ),
+                disclosure_scope="public",
+            )
+
+            await app.respond(
+                "44",
+                "[Morgan]: What do you think?",
+                provenance=current,
+                ambient_context="[Alex] Bounded ambient line",
+            )
+
+            tier, request = app.models.requests[-1]
+            self.assertEqual(tier, "social")
+            self.assertEqual(request.model, "social-model")
+            self.assertEqual(request.max_tokens, 600)
+            self.assertIn("public-safe self", request.system)
+            self.assertIn("Bounded ambient line", request.system)
+            rendered = "\n".join(str(item.content) for item in request.messages)
+            self.assertIn("Visible prior turn", rendered)
+            self.assertNotIn("Private local secret", rendered)
+            self.assertEqual(request.tools, ())
+            self.assertEqual(app.model_usage_snapshot()["social"]["calls"], 1)
+
+    async def test_public_history_is_trimmed_without_durable_compression(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self.make_app(Path(tmp))
+            app.persona = PublicPersona()
+            app.config.max_recent = 2
+            app.config.social_history_messages = 2
+            current = replace(
+                provenance(
+                    "44", author_id=99, author_name="Alex", source_id="public-trim"
+                ),
+                disclosure_scope="public",
+            )
+
+            await app.respond("44", "[Alex]: Hello", provenance=current)
+
+            self.assertEqual(len(app.history.get("44")), 2)
+            self.assertEqual(await app.memory.list(Scope("44", "naomi")), [])
+
+    async def test_discretionary_public_reply_commits_only_after_confirmed_send(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self.make_app(Path(tmp))
+            app.persona = PublicPersona()
+            current = replace(
+                provenance(
+                    "44", author_id=99, author_name="Alex", source_id="deferred"
+                ),
+                disclosure_scope="public",
+            )
+            user_text = "[Alex]: An opening"
+
+            reply = await app.respond(
+                "44",
+                user_text,
+                provenance=current,
+                ambient_context="[Morgan] Related public context",
+                store_history=False,
+            )
+            self.assertEqual(app.history.get("44"), [])
+
+            app.record_exchange("44", user_text, reply, current)
+            self.assertEqual(len(app.history.get("44")), 2)
+
+    async def test_discretionary_public_opening_allows_resident_to_decline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self.make_app(Path(tmp))
+            app.persona = PublicPersona()
+            app.models.response_text = "<NO_RESPONSE>"
+            current = replace(
+                provenance(
+                    "44", author_id=99, author_name="Alex", source_id="declined"
+                ),
+                disclosure_scope="public",
+            )
+
+            reply = await app.respond(
+                "44",
+                "[Alex]: An opening",
+                provenance=current,
+                ambient_context="[human: Morgan] Related public context",
+                store_history=False,
+                discretionary_social=True,
+            )
+
+            self.assertEqual(reply, "")
+            self.assertEqual(app.history.get("44"), [])
+            self.assertIn(
+                "permission to consider joining, not an instruction to perform",
+                app.models.requests[-1][1].system,
+            )
 
     async def test_guest_cannot_spoof_continuity_but_internal_outreach_keeps_it(self):
         with tempfile.TemporaryDirectory() as tmp:

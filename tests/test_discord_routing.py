@@ -11,7 +11,10 @@ import discord
 from disco_proxy_soul.discord_app.bot import (
     _CompanionCommandTree,
     _author_allowed,
+    _message_policy,
     _response_trigger,
+    _social_author_kind,
+    social_ambient_notice,
 )
 
 
@@ -27,6 +30,120 @@ class DiscordRoutingTests(unittest.TestCase):
                 mentioned=False, is_dm=False, in_active=True, is_reply=False
             ),
             "active-channel",
+        )
+
+    def test_room_policy_separates_partner_identity_from_public_disclosure(self):
+        self.assertIsNone(
+            _message_policy(
+                mode="private",
+                partner_configured=True,
+                is_partner=False,
+                direct_trigger="mention",
+                private_active=True,
+            )
+        )
+        social_partner = _message_policy(
+            mode="social",
+            partner_configured=True,
+            is_partner=True,
+            direct_trigger=None,
+            private_active=False,
+        )
+        self.assertEqual(social_partner.route_kind, "social")
+        self.assertEqual(social_partner.disclosure_scope, "public")
+        addressed_guest = _message_policy(
+            mode="addressed",
+            partner_configured=True,
+            is_partner=False,
+            direct_trigger="mention",
+            private_active=False,
+        )
+        self.assertEqual(addressed_guest.route_kind, "immediate")
+        self.assertEqual(addressed_guest.disclosure_scope, "public")
+
+    def test_unlisted_room_preserves_partner_mentions_without_opening_to_guests(self):
+        partner = _message_policy(
+            mode="unlisted",
+            partner_configured=True,
+            is_partner=True,
+            direct_trigger="mention",
+            private_active=False,
+        )
+        self.assertEqual(partner.route_kind, "immediate")
+        self.assertEqual(partner.disclosure_scope, "private")
+        self.assertIsNone(
+            _message_policy(
+                mode="unlisted",
+                partner_configured=True,
+                is_partner=False,
+                direct_trigger="mention",
+                private_active=False,
+            )
+        )
+        open_install = _message_policy(
+            mode="unlisted",
+            partner_configured=False,
+            is_partner=False,
+            direct_trigger="reply",
+            private_active=False,
+        )
+        self.assertEqual(open_install.route_kind, "immediate")
+        self.assertEqual(open_install.disclosure_scope, "private")
+        self.assertIsNone(
+            _message_policy(
+                mode="unlisted",
+                partner_configured=True,
+                is_partner=True,
+                direct_trigger="name-address",
+                private_active=False,
+            )
+        )
+
+    def test_social_notice_discloses_local_gate_and_selected_cloud_context(self):
+        notice = social_ambient_notice(
+            "Naomi", attention_model="qwen3:1.7b", response_provider="xai"
+        )
+        self.assertIn("local Ollama model `qwen3:1.7b`", notice)
+        self.assertIn("configured external `xai` response provider", notice)
+        self.assertIn("RAM", notice)
+        self.assertIn("Attachments", notice)
+        self.assertIn("approved AI residents", notice)
+
+    def test_social_author_kind_admits_people_and_approved_residents_only(self):
+        residents = (700,)
+        self.assertEqual(
+            _social_author_kind(
+                author_id=12,
+                is_bot=False,
+                is_self=False,
+                resident_user_ids=residents,
+            ),
+            "human",
+        )
+        self.assertEqual(
+            _social_author_kind(
+                author_id=700,
+                is_bot=True,
+                is_self=False,
+                resident_user_ids=residents,
+            ),
+            "ai_resident",
+        )
+        self.assertIsNone(
+            _social_author_kind(
+                author_id=800,
+                is_bot=True,
+                is_self=False,
+                resident_user_ids=residents,
+            )
+        )
+        self.assertIsNone(
+            _social_author_kind(
+                author_id=700,
+                is_bot=True,
+                is_self=True,
+                resident_user_ids=residents,
+            )
         )
 
 

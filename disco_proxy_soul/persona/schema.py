@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-DOC_MODES = ("always_on", "presence", "author")
+DOC_MODES = ("always_on", "presence", "public", "author")
 
 CARD_FIELD_ORDER = (
     "age",
@@ -60,6 +60,23 @@ class PersonaCharacter:
 
 
 @dataclass(frozen=True)
+class SocialPosture:
+    """Small public-safe card used only to decide when to seek attention."""
+
+    traits: dict[str, float] = field(default_factory=dict)
+    description: str = ""
+
+    def format_for_attention(self) -> str:
+        lines = [
+            f"{name.replace('_', ' ').title()}: {value:.2f}"
+            for name, value in self.traits.items()
+        ]
+        if self.description:
+            lines.append(f"Notes: {self.description}")
+        return "\n".join(lines)
+
+
+@dataclass(frozen=True)
 class PersonaPackage:
     """External persona material loaded by the reusable host app."""
 
@@ -73,6 +90,7 @@ class PersonaPackage:
     documents: tuple[PersonaDocument, ...] = ()
     always_on_docs: tuple[str, ...] = ()
     character: PersonaCharacter = field(default_factory=PersonaCharacter)
+    social_posture: SocialPosture = field(default_factory=SocialPosture)
     room_note: str = ""
     voice_is_default: bool = False
     uses_default_presence: bool = False

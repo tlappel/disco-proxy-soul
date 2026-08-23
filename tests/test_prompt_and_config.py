@@ -17,6 +17,13 @@ from disco_proxy_soul.prompt import build_system_prompt
 
 
 class ConfigTests(unittest.TestCase):
+    def test_social_attention_defaults_to_supported_warm_gate(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            config = RuntimeConfig.from_env()
+        self.assertEqual(config.social_attention_model, "qwen3:4b")
+        self.assertEqual(config.social_attention_timeout_seconds, 30.0)
+        self.assertEqual(config.social_attention_keep_alive, "-1")
+
     def test_parse_model_ref(self) -> None:
         self.assertEqual(parse_model_ref("grok-4.6", "xai"), ("xai", "grok-4.6"))
         self.assertEqual(parse_model_ref("openai:gpt-4.1", "xai"), ("openai", "gpt-4.1"))
@@ -54,6 +61,37 @@ class ConfigTests(unittest.TestCase):
     def test_invalid_active_channel_list_fails_closed(self) -> None:
         with patch.dict(os.environ, {"ACTIVE_CHANNEL_IDS": "22,nope"}, clear=True):
             with self.assertRaisesRegex(ValueError, "ACTIVE_CHANNEL_IDS"):
+                RuntimeConfig.from_env()
+
+    def test_room_modes_are_explicit_and_nonoverlapping(self) -> None:
+        env = {
+            "WATCH_CHANNEL_ID": "11",
+            "ACTIVE_CHANNEL_IDS": "22",
+            "SOCIAL_CHANNEL_IDS": "33",
+            "SOCIAL_RESIDENT_USER_IDS": "700, 701,700",
+            "ADDRESSED_CHANNEL_IDS": "44",
+            "IGNORED_CHANNEL_IDS": "55",
+            "MODEL_SOCIAL": "xai:grok-4.6",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = RuntimeConfig.from_env()
+        self.assertEqual(config.channel_mode(11), "private")
+        self.assertEqual(config.channel_mode(22), "private")
+        self.assertEqual(config.channel_mode(33), "social")
+        self.assertEqual(config.channel_mode(44), "addressed")
+        self.assertEqual(config.channel_mode(55), "ignored")
+        self.assertEqual(config.channel_mode(66), "unlisted")
+        self.assertEqual(config.social_resident_user_ids, (700, 701))
+        self.assertEqual(config.social_ref(), ("xai", "grok-4.6"))
+        self.assertFalse(config.social_ambient_enabled)
+
+    def test_overlapping_room_modes_fail_configuration(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"ACTIVE_CHANNEL_IDS": "22", "SOCIAL_CHANNEL_IDS": "22"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ValueError, "appears in both"):
                 RuntimeConfig.from_env()
 
 

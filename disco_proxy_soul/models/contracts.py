@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, Sequence
 
 ModelTier = Literal[
-    "primary", "cheap", "medium", "json", "stt", "tts", "image", "embedding"
+    "primary", "cheap", "social", "medium", "json", "stt", "tts", "image", "embedding"
 ]
 ModelCapability = Literal["chat", "json", "stt", "tts", "image", "embedding"]
 StopReason = Literal["end", "tool_calls", "empty", "error"]

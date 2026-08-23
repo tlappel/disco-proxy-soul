@@ -91,16 +91,21 @@ class PersonaLoaderTests(unittest.TestCase):
             root = _write_package(Path(tmp) / "example")
             (root / "docs" / "always").mkdir()
             (root / "docs" / "presence").mkdir()
+            (root / "docs" / "public").mkdir()
             (root / "docs" / "always" / "practice.md").write_text(
                 "The practice", encoding="utf-8"
             )
             (root / "docs" / "presence" / "focus.md").write_text(
                 "Situational module", encoding="utf-8"
             )
+            (root / "docs" / "public" / "community.md").write_text(
+                "Public-safe identity", encoding="utf-8"
+            )
             persona = load_persona(root)
 
         self.assertEqual(persona.find_document("practice.md").mode, "always_on")
         self.assertEqual(persona.find_document("focus.md").mode, "presence")
+        self.assertEqual(persona.find_document("community.md").mode, "public")
 
     def test_root_markdown_defaults_to_library(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -125,6 +130,36 @@ class PersonaLoaderTests(unittest.TestCase):
 
         self.assertEqual(persona.character.fields["occupation"], "night shift")
         self.assertEqual(persona.character.example_lines, ("slow and deep. yes.",))
+
+    def test_social_posture_is_public_safe_and_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = _write_package(Path(tmp) / "example")
+            (root / "social_posture.json").write_text(
+                json.dumps(
+                    {
+                        "traits": {"sociability": 0.65, "Openness": 0.75},
+                        "description": "Curious in public without dominating.",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            persona = load_persona(root)
+
+        self.assertEqual(persona.social_posture.traits["sociability"], 0.65)
+        self.assertEqual(persona.social_posture.traits["openness"], 0.75)
+        rendered = persona.social_posture.format_for_attention()
+        self.assertIn("Sociability: 0.65", rendered)
+        self.assertIn("Curious in public", rendered)
+
+    def test_invalid_social_posture_trait_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = _write_package(Path(tmp) / "example")
+            (root / "social_posture.json").write_text(
+                json.dumps({"traits": {"sociability": 1.5}}),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(PersonaLoadError, "between 0 and 1"):
+                load_persona(root)
 
     def test_missing_layer_path_raises(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -164,6 +199,28 @@ class PersonaLoaderTests(unittest.TestCase):
         self.assertNotIn("Lilith draft notes", closed)
         self.assertNotIn("Lilith draft notes", open_presence)
         self.assertIn("Stay in the room", open_presence)
+
+    def test_public_projection_uses_only_public_document_layer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = _write_package(Path(tmp) / "example")
+            (root / "docs" / "public").mkdir()
+            (root / "docs" / "public" / "about.md").write_text(
+                "Safe community self", encoding="utf-8"
+            )
+            persona = load_persona(root)
+            facts = FactStore(root / "facts.json", persona.facts_seed)
+            prompt = build_system_prompt(
+                persona,
+                facts,
+                include_private_context=False,
+                ambient_context="[Alex] Public room message",
+            )
+
+        self.assertIn("Safe community self", prompt)
+        self.assertIn("Public room message", prompt)
+        self.assertNotIn("Identity", prompt)
+        self.assertNotIn("Shared", prompt)
+        self.assertNotIn("Voice", prompt)
 
 
 if __name__ == "__main__":

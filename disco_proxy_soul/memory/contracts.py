@@ -43,15 +43,18 @@ class TurnProvenance:
     surface: str = "text"
     author_id: str | None = None
     author_name: str | None = None
+    author_kind: str = "human"
     trigger: str | None = None
     source_id: str | None = None
     continuity_id: str | None = None
+    disclosure_scope: str = "private"
 
     def for_assistant(self, persona_id: str, companion_name: str) -> "TurnProvenance":
         return replace(
             self,
             author_id=f"companion:{persona_id}",
             author_name=companion_name,
+            author_kind="resident",
         )
 
     def to_dict(self) -> dict[str, str]:
@@ -63,9 +66,11 @@ class TurnProvenance:
             "surface": self.surface,
             "author_id": self.author_id,
             "author_name": self.author_name,
+            "author_kind": self.author_kind,
             "trigger": self.trigger,
             "source_id": self.source_id,
             "continuity_id": self.continuity_id,
+            "disclosure_scope": self.disclosure_scope,
         }
         return {key: value for key, value in values.items() if value not in (None, "")}
 
@@ -81,9 +86,11 @@ class TurnProvenance:
             surface=str(data.get("surface") or "text"),
             author_id=_optional_text(data.get("author_id")),
             author_name=_optional_text(data.get("author_name")),
+            author_kind=str(data.get("author_kind") or "human"),
             trigger=_optional_text(data.get("trigger")),
             source_id=_optional_text(data.get("source_id")),
             continuity_id=_optional_text(data.get("continuity_id")),
+            disclosure_scope=str(data.get("disclosure_scope") or "private"),
         )
 
 

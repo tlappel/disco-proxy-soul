@@ -48,6 +48,22 @@ def config(**changes):
         "voice_gladia_stop_seconds": 0.05,
         "voice_min_speech_ms": 120,
         "data_dir": Path("unused-test-data"),
+        "ollama_base_url": "http://127.0.0.1:11434",
+        "social_attention_model": "qwen3:4b",
+        "social_attention_timeout_seconds": 30.0,
+        "social_attention_threads": 4,
+        "social_attention_context_tokens": 2048,
+        "social_attention_keep_alive": "-1",
+        "social_ambient_enabled": False,
+        "social_debounce_seconds": 3.0,
+        "social_buffer_messages": 12,
+        "social_buffer_chars": 4000,
+        "social_engagement_seconds": 120.0,
+        "social_cooldown_seconds": 30.0,
+        "social_budget_capacity": 6.0,
+        "social_budget_refill_per_hour": 2.0,
+        "social_direct_burst": 3,
+        "social_direct_refill_per_minute": 2.0,
     }
     values.update(changes)
     return SimpleNamespace(**values)
