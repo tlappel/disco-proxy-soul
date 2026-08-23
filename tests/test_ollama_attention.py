@@ -80,6 +80,8 @@ class OllamaAttentionTests(unittest.IsolatedAsyncioTestCase):
                 "user",
                 "assistant",
                 "user",
+                "assistant",
+                "user",
             ],
         )
         instructions = payload["messages"][0]["content"]

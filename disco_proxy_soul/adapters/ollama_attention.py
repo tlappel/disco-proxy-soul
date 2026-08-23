@@ -105,8 +105,10 @@ class OllamaAttentionJudge:
             "situation is worth bringing to the resident's attention. CONSIDER means there "
             "is a socially reasonable opening, not that the resident must reply. Curiosity, "
             "warmth, humor, a useful question, or relevant knowledge can all be enough. "
-            "WAIT when a thought is unfinished, another participant is actively answering, "
-            "or the timing is momentarily poor. IGNORE when an explicit boundary asks for "
+            "Apply these timing rules before considering an opening: WAIT when a thought "
+            "is unfinished, another participant has claimed the question or is actively "
+            "answering, or the timing is momentarily poor. A whole-room question does not "
+            "override an active human claim. IGNORE when an explicit boundary asks for "
             "space, the exchange is clearly closed, or there is no plausible foothold. "
             "Use the public social posture and current door sign as tendencies, not rigid "
             "commands. Avoid assuming silence is always safer. Return only the requested JSON."
@@ -129,10 +131,15 @@ class OllamaAttentionJudge:
                 "A participant explicitly asked the resident for space.",
             ),
             (
-                "[human: Riley] Does anyone know why the alert—\n"
-                "[human: Sam] I am checking it now.",
+                "[human: Riley] Maybe the cache is failing because—",
                 "wait",
-                "The thought is unfinished and Sam has claimed the question.",
+                "Riley's thought is visibly unfinished.",
+            ),
+            (
+                "[human: Riley] Does anyone know why the lights are flickering?\n"
+                "[human: Sam] I am on it.",
+                "wait",
+                "Sam has already claimed the question and is actively checking.",
             ),
             (
                 "[human: Riley] Naomi, what do you make of this?",
