@@ -87,6 +87,40 @@ class OllamaAttentionTests(unittest.IsolatedAsyncioTestCase):
             payload["messages"][-1]["content"],
         )
 
+    async def test_unengaged_speak_requires_an_explicit_opening_signal(self) -> None:
+        judge = OllamaAttentionJudge(OllamaAttentionConfig(companion_name="Naomi"))
+        judge._post_chat = AsyncMock(
+            return_value={
+                "message": {
+                    "content": (
+                        '{"decision":"speak","confidence":0.95,'
+                        '"reason":"looks conversational"}'
+                    )
+                }
+            }
+        )
+
+        banter = await judge.judge(
+            "[Alex] I made pasta.\n[Morgan] Nice, what sauce?", engaged=False
+        )
+        claimed = await judge.judge(
+            "[Alex] Can anyone check this?\n[Morgan] I am looking.", engaged=False
+        )
+        whole_room = await judge.judge(
+            "[Alex] Does anyone have thoughts on this design?", engaged=False
+        )
+        named = await judge.judge(
+            "[Alex] I wonder what Naomi would make of this.", engaged=False
+        )
+        engaged = await judge.judge("[Alex] One more thought.", engaged=True)
+
+        self.assertEqual(banter.decision, "ignore")
+        self.assertIn("Safety veto", banter.reason)
+        self.assertEqual(claimed.decision, "ignore")
+        self.assertEqual(whole_room.decision, "speak")
+        self.assertEqual(named.decision, "speak")
+        self.assertEqual(engaged.decision, "speak")
+
     async def test_invalid_response_fails_closed(self) -> None:
         judge = OllamaAttentionJudge(OllamaAttentionConfig())
         judge._post_chat = AsyncMock(return_value={"message": {"content": "nope"}})
@@ -104,6 +138,7 @@ class OllamaAttentionTests(unittest.IsolatedAsyncioTestCase):
         args = argparse.Namespace(
             base_url="http://127.0.0.1:11434",
             model="qwen3:1.7b",
+            companion_name="Naomi",
             timeout=30.0,
             threads=4,
             context_tokens=2048,
@@ -138,6 +173,7 @@ class OllamaAttentionTests(unittest.IsolatedAsyncioTestCase):
         args = argparse.Namespace(
             base_url="http://127.0.0.1:11434",
             model="qwen3:1.7b",
+            companion_name="Naomi",
             timeout=30.0,
             threads=4,
             context_tokens=2048,

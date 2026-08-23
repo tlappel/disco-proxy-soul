@@ -133,6 +133,12 @@ when the safe boundary does not match: silence examples must never produce
 `wait` labels remain visible diagnostics but currently have the same silent
 runtime behavior.
 
+For an unengaged room, a deterministic final guard requires the latest message
+to contain a whole-room invitation, a request for another perspective, or the
+configured companion name before a local-model `speak` decision is honored.
+Once the companion is already engaged, the local model may continue the active
+exchange without that extra opening phrase.
+
 The discretionary budget refills gradually. As it drains, the confidence
 threshold and cooldown rise; when empty, the room becomes addressed-only rather
 than muting the companion entirely. `/social-status` reports local gate calls,

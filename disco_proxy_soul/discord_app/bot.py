@@ -172,6 +172,7 @@ def build_bot(app: CompanionApp) -> discord.Client:
         OllamaAttentionConfig(
             base_url=app.config.ollama_base_url,
             model=app.config.social_attention_model,
+            companion_name=companion,
             timeout_seconds=app.config.social_attention_timeout_seconds,
             threads=app.config.social_attention_threads,
             context_tokens=app.config.social_attention_context_tokens,
