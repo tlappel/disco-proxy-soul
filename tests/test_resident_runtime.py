@@ -299,6 +299,8 @@ def test_discord_text_path_uses_injected_runtime_and_reports_delivery() -> None:
         client._connection.user = SimpleNamespace(id=400)
         incoming = Message()
         try:
+            assert client.tree.get_commands() == []
+            assert client.voice_sessions._app is None
             await client.on_message(incoming)
             assert incoming.reply_text == "One accepted answer."
             assert app.respond.call_count == 0
@@ -311,3 +313,12 @@ def test_discord_text_path_uses_injected_runtime_and_reports_delivery() -> None:
         assert runtime.closed is True
 
     asyncio.run(scenario())
+
+
+def test_connected_runtime_refuses_ambient_activation() -> None:
+    app = MagicMock()
+    app.config.social_ambient_enabled = True
+    runtime = MagicMock()
+
+    with pytest.raises(ValueError, match="does not support discretionary ambient"):
+        build_bot(app, resident_runtime=runtime)

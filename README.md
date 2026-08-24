@@ -165,8 +165,10 @@ the Discord body.
 This doorway is not selected by environment configuration and is not active in
 the normal `run()` path. Standalone behavior is unchanged. Connected
 attachments, voice, commands, outreach, and discretionary ambient abstention
-remain later work; in particular, the bridge does not store `<NO_RESPONSE>` as
-an utterance or pretend ambient connected mode is ready.
+remain later work. When the doorway is injected, those legacy cognition/write
+paths are disabled rather than left beside Everthread as a second writer. In
+particular, the bridge does not store `<NO_RESPONSE>` as an utterance or pretend
+ambient connected mode is ready.
 
 The discretionary budget refills gradually. As it drains, the cooldown rises;
 when empty, the room becomes addressed-only rather than muting the companion

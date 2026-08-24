@@ -215,6 +215,10 @@ def build_bot(
     *,
     resident_runtime: ResidentRuntime | None = None,
 ) -> discord.Client:
+    if resident_runtime is not None and app.config.social_ambient_enabled:
+        raise ValueError(
+            "connected text runtime does not support discretionary ambient turns yet"
+        )
     intents = discord.Intents.default()
     intents.message_content = True
     intents.reactions = True
@@ -224,7 +228,10 @@ def build_bot(
         resident_runtime=resident_runtime,
     )
     tree = _CompanionCommandTree(client, app)
-    voice_sessions = VoiceSessionManager(app.config, app=app)
+    voice_sessions = VoiceSessionManager(
+        app.config,
+        app=(app if resident_runtime is None else None),
+    )
     companion = app.persona.companion_name
     partner = app.persona.partner_name
     posture = getattr(app.persona, "social_posture", None)
@@ -257,7 +264,8 @@ def build_bot(
         social_posture=social_posture,
         ai_chain_limit=getattr(app.config, "social_ai_chain_limit", 4),
     )
-    register_commands(tree, app, voice_sessions, social_presence=social_presence)
+    if resident_runtime is None:
+        register_commands(tree, app, voice_sessions, social_presence=social_presence)
     message_index: dict[str, dict[str, tuple[str, str]]] = defaultdict(dict)
     channel_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
@@ -272,7 +280,11 @@ def build_bot(
         print(f"Data dir: {app.config.data_dir.resolve()}")
         active = sorted(app.config.automatic_response_channel_ids)
         print(f"Active channels: {active or 'none (DM/mention/reply only)'}")
-        print(f"Outreach: {'enabled' if app.outreach.enabled else 'disabled'}")
+        print(
+            "Outreach: disabled in connected text mode"
+            if resident_runtime is not None
+            else f"Outreach: {'enabled' if app.outreach.enabled else 'disabled'}"
+        )
         print(
             f"Social channels: {sorted(app.config.social_channel_ids) or 'none'}; "
             f"ambient local attention: "
@@ -314,7 +326,7 @@ def build_bot(
                         )
                     else:
                         social_presence.confirm_notice(channel_id)
-        if not getattr(client, "_outreach_task", None):
+        if resident_runtime is None and not getattr(client, "_outreach_task", None):
             client._outreach_task = asyncio.create_task(_outreach_loop(client, app))
 
     @client.event
@@ -583,6 +595,8 @@ def build_bot(
 
     @client.event
     async def on_reaction_add(reaction: discord.Reaction, user: discord.User) -> None:
+        if resident_runtime is not None:
+            return
         if user == client.user:
             return
         if not _author_allowed(app.config.partner_user_id, int(user.id)):
