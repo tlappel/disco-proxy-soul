@@ -3,21 +3,22 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 import logging
 import os
 from collections import defaultdict
+from dataclasses import dataclass
 
 import aiohttp
 import discord
 from discord import app_commands
 from dotenv import load_dotenv
 
-from ..app import CompanionApp
 from ..adapters.gladia_live import redact_sensitive_text
 from ..adapters.ollama_attention import OllamaAttentionConfig, OllamaAttentionJudge
+from ..app import CompanionApp
 from ..config import RuntimeConfig
 from ..memory.contracts import TurnProvenance
+from ..resident_runtime import ResidentRuntime, RuntimeSource, RuntimeTurn
 from ..safety import sanitize_outgoing
 from .attachments import build_user_parts
 from .commands import register_commands
@@ -28,7 +29,6 @@ from .social_presence import (
     clear_name_address,
 )
 from .voice_session import VoiceSessionManager
-
 
 APPLICATION_LOGGER_NAME = "disco_proxy_soul"
 
@@ -184,12 +184,45 @@ def social_ambient_notice(
     )
 
 
-def build_bot(app: CompanionApp) -> discord.Client:
+class _ResidentDiscordClient(discord.Client):
+    def __init__(
+        self, *args, resident_runtime: ResidentRuntime | None = None, **kwargs
+    ):
+        super().__init__(*args, **kwargs)
+        self._resident_runtime = resident_runtime
+
+    async def close(self) -> None:
+        errors: list[BaseException] = []
+        try:
+            await super().close()
+        except BaseException as exc:
+            errors.append(exc)
+        if self._resident_runtime is not None:
+            try:
+                await self._resident_runtime.close()
+            except BaseException as exc:
+                errors.append(exc)
+        if len(errors) == 1:
+            raise errors[0]
+        if errors:
+            raise BaseExceptionGroup(
+                "Discord and resident runtime cleanup failed", errors
+            )
+
+
+def build_bot(
+    app: CompanionApp,
+    *,
+    resident_runtime: ResidentRuntime | None = None,
+) -> discord.Client:
     intents = discord.Intents.default()
     intents.message_content = True
     intents.reactions = True
 
-    client = discord.Client(intents=intents)
+    client = _ResidentDiscordClient(
+        intents=intents,
+        resident_runtime=resident_runtime,
+    )
     tree = _CompanionCommandTree(client, app)
     voice_sessions = VoiceSessionManager(app.config, app=app)
     companion = app.persona.companion_name
@@ -230,6 +263,8 @@ def build_bot(app: CompanionApp) -> discord.Client:
 
     @client.event
     async def on_ready() -> None:
+        if resident_runtime is not None:
+            await resident_runtime.start()
         await tree.sync()
         print(f"{companion} v2 online as {client.user}")
         print(f"Persona: {app.persona.persona_id} ({app.persona.root})")
@@ -328,8 +363,7 @@ def build_bot(app: CompanionApp) -> discord.Client:
             is_partner=is_partner,
             direct_trigger=direct_trigger,
             private_active=(
-                is_dm
-                or message.channel.id in app.config.automatic_response_channel_ids
+                is_dm or message.channel.id in app.config.automatic_response_channel_ids
             ),
         )
         if policy is None:
@@ -355,6 +389,7 @@ def build_bot(app: CompanionApp) -> discord.Client:
                     author_name=str(message.author.display_name),
                     author_kind=author_kind,
                     content=message.content,
+                    occurred_at=message.created_at,
                 ),
                 direct_trigger=direct_trigger,
             )
@@ -364,7 +399,11 @@ def build_bot(app: CompanionApp) -> discord.Client:
             route = SocialRoute(trigger=policy.trigger or "addressed")
         disclosure_scope = policy.disclosure_scope
 
-        text = _clean_mentions(message.content, client.user.id) if client.user else message.content
+        text = (
+            _clean_mentions(message.content, client.user.id)
+            if client.user
+            else message.content
+        )
         identify_author = disclosure_scope == "public" or (
             message.channel.id not in app.config.automatic_response_channel_ids
             or (bool(app.config.partner_user_id) and not is_partner)
@@ -393,6 +432,12 @@ def build_bot(app: CompanionApp) -> discord.Client:
                 try:
                     if route.discretionary:
                         parts = ()
+                    elif resident_runtime is not None:
+                        if message.attachments:
+                            raise ValueError(
+                                "connected text runtime does not admit attachments yet"
+                            )
+                        parts = ()
                     else:
                         async with aiohttp.ClientSession() as session:
                             parts = await build_user_parts(
@@ -417,15 +462,38 @@ def build_bot(app: CompanionApp) -> discord.Client:
                         source_id=f"discord-message:{message.id}",
                         disclosure_scope=disclosure_scope,
                     )
-                    reply = await app.respond(
-                        channel_key,
-                        store_text,
-                        parts=parts,
-                        provenance=provenance,
-                        ambient_context=route.ambient_context,
-                        store_history=not route.discretionary,
-                        discretionary_social=route.discretionary,
-                    )
+                    connected_outcome = None
+                    connected_preparation = None
+                    if resident_runtime is None:
+                        reply = await app.respond(
+                            channel_key,
+                            store_text,
+                            parts=parts,
+                            provenance=provenance,
+                            ambient_context=route.ambient_context,
+                            store_history=not route.discretionary,
+                            discretionary_social=route.discretionary,
+                        )
+                    else:
+                        connected_outcome = await resident_runtime.complete(
+                            _runtime_turn(
+                                app,
+                                message,
+                                route,
+                                canonical_text=text or "[image]",
+                                surface=surface,
+                                disclosure_scope=disclosure_scope,
+                            )
+                        )
+                        connected_preparation = await resident_runtime.prepare_delivery(
+                            resident_id=app.persona.persona_id,
+                            outcome_id=connected_outcome.outcome_id,
+                            logical_delivery_id=f"discord-message:{message.id}",
+                            target=f"discord.channel:{message.channel.id}",
+                        )
+                        if connected_preparation.disposition != "send":
+                            return
+                        reply = connected_outcome.text
                 finally:
                     if typing is not None:
                         try:
@@ -439,26 +507,75 @@ def build_bot(app: CompanionApp) -> discord.Client:
                     if not reply.strip():
                         return
                 sent = None
-                if len(reply) <= 2000:
-                    sent = await message.reply(reply)
-                else:
-                    chunks = [reply[i:i + 1900] for i in range(0, len(reply), 1900)]
-                    for index, chunk in enumerate(chunks):
-                        sent = (
-                            await message.reply(chunk)
-                            if index == 0
-                            else await message.channel.send(chunk)
+                sent_ids: list[str] = []
+                try:
+                    if len(reply) <= 2000:
+                        sent = await message.reply(reply)
+                        sent_ids.append(str(sent.id))
+                    else:
+                        chunks = [
+                            reply[i : i + 1900] for i in range(0, len(reply), 1900)
+                        ]
+                        for index, chunk in enumerate(chunks):
+                            sent = (
+                                await message.reply(chunk)
+                                if index == 0
+                                else await message.channel.send(chunk)
+                            )
+                            sent_ids.append(str(sent.id))
+                except asyncio.CancelledError:
+                    if (
+                        resident_runtime is not None
+                        and connected_preparation is not None
+                        and connected_preparation.attempt_id is not None
+                    ):
+                        await asyncio.shield(
+                            resident_runtime.record_delivery_result(
+                                resident_id=app.persona.persona_id,
+                                attempt_id=connected_preparation.attempt_id,
+                                status="ambiguous",
+                                external_ids=tuple(sent_ids),
+                                error_class="delivery_cancelled_during_io",
+                            )
                         )
+                    raise
+                except Exception as exc:
+                    if (
+                        resident_runtime is not None
+                        and connected_preparation is not None
+                        and connected_preparation.attempt_id is not None
+                    ):
+                        await resident_runtime.record_delivery_result(
+                            resident_id=app.persona.persona_id,
+                            attempt_id=connected_preparation.attempt_id,
+                            status="ambiguous",
+                            external_ids=tuple(sent_ids),
+                            error_class=type(exc).__name__,
+                        )
+                    raise
                 if sent:
-                    if route.discretionary:
-                        app.record_exchange(
-                            channel_key, store_text, reply, provenance
+                    if resident_runtime is not None:
+                        if (
+                            connected_preparation is None
+                            or connected_preparation.attempt_id is None
+                        ):
+                            raise RuntimeError(
+                                "connected delivery has no prepared attempt"
+                            )
+                        await resident_runtime.record_delivery_result(
+                            resident_id=app.persona.persona_id,
+                            attempt_id=connected_preparation.attempt_id,
+                            status="confirmed",
+                            external_ids=tuple(sent_ids),
                         )
+                    elif route.discretionary:
+                        app.record_exchange(channel_key, store_text, reply, provenance)
                     message_index[channel_key][str(sent.id)] = (store_text, reply)
                     if disclosure_scope == "public":
                         social_presence.mark_response(
                             channel_key,
                             source_author_kind=route.source_author_kind,
+                            close_source_window=resident_runtime is not None,
                         )
         finally:
             if route.discretionary:
@@ -501,7 +618,7 @@ def build_bot(app: CompanionApp) -> discord.Client:
             )
         else:
             prompt = (
-                f"{partner} reacted with {emoji} to your message: \"{msg.content[:100]}\""
+                f'{partner} reacted with {emoji} to your message: "{msg.content[:100]}"'
             )
         async with msg.channel.typing():
             reply = await app.respond(
@@ -534,6 +651,60 @@ def build_bot(app: CompanionApp) -> discord.Client:
     client.voice_sessions = voice_sessions  # type: ignore[attr-defined]
     client.social_presence = social_presence  # type: ignore[attr-defined]
     return client
+
+
+def _runtime_turn(
+    app: CompanionApp,
+    message: discord.Message,
+    route: SocialRoute,
+    *,
+    canonical_text: str,
+    surface: str,
+    disclosure_scope: str,
+) -> RuntimeTurn:
+    group_id = f"discord-turn:{message.id}" if disclosure_scope == "public" else None
+    prior = route.source_messages if disclosure_scope == "public" else ()
+    sources: list[RuntimeSource] = []
+    for position, source in enumerate((*prior, None)):
+        if source is None:
+            occurred_at = message.created_at
+            source_id = str(message.id)
+            actor_id = str(message.author.id)
+            actor_label = str(message.author.display_name)
+            source_text = canonical_text
+            source_surface = f"discord.{surface}"
+        else:
+            if source.occurred_at is None:
+                raise ValueError("connected ambient source has no stable timestamp")
+            occurred_at = source.occurred_at
+            source_id = source.message_id
+            actor_id = source.author_id
+            actor_label = source.author_name
+            source_text = source.content
+            source_surface = f"discord.{surface}"
+        sources.append(
+            RuntimeSource(
+                source_id=source_id,
+                text=source_text,
+                occurred_at=occurred_at,
+                conversation_id=f"discord-channel:{message.channel.id}",
+                conversation_label=getattr(message.channel, "name", None),
+                surface=source_surface,
+                actor_id=actor_id,
+                actor_label=actor_label,
+                disclosure_scope=disclosure_scope,
+                interaction_mode="text",
+                source_group_id=group_id,
+                source_group_position=(position if group_id is not None else None),
+            )
+        )
+    return RuntimeTurn(
+        resident_id=app.persona.persona_id,
+        person_label=str(message.author.display_name),
+        resident_label=app.persona.companion_name,
+        sources=tuple(sources),
+        response_source_id=str(message.id),
+    )
 
 
 async def _outreach_loop(client: discord.Client, app: CompanionApp) -> None:

@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-from collections import deque
-from dataclasses import dataclass, field
 import re
 import time
-from typing import Awaitable, Callable
+from collections import deque
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from datetime import datetime
 
 from ..adapters.ollama_attention import AttentionDecision, OllamaAttentionError
 from ..safety import sanitize_incoming_text
-
 
 AttentionJudge = Callable[..., Awaitable[AttentionDecision]]
 AVAILABILITY_MODES = {"unavailable", "listening", "open", "seeking"}
@@ -27,6 +27,7 @@ class SocialMessage:
     author_name: str
     author_kind: str
     content: str
+    occurred_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,7 @@ class SocialRoute:
     ambient_context: str = ""
     discretionary: bool = False
     source_author_kind: str = "human"
+    source_messages: tuple[SocialMessage, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -234,6 +236,7 @@ class SocialPresence:
                     author_name=_label(message.author_name),
                     author_kind=_author_kind(message.author_kind),
                     content=sanitize_incoming_text(message.content),
+                    occurred_at=message.occurred_at,
                 )
             )
             state.generation += 1
@@ -252,6 +255,11 @@ class SocialPresence:
                     else ""
                 ),
                 source_author_kind=message.author_kind,
+                source_messages=(
+                    self._source_messages(state, exclude_message_id=message.message_id)
+                    if can_observe_ambient
+                    else ()
+                ),
             )
 
         if not can_observe_ambient or self.judge is None:
@@ -313,15 +321,20 @@ class SocialPresence:
         self.counters.ambient_considers += 1
         return SocialRoute(
             trigger="social-attention",
-            ambient_context=self._render(
-                state, exclude_message_id=message.message_id
-            ),
+            ambient_context=self._render(state, exclude_message_id=message.message_id),
             discretionary=True,
             source_author_kind=message.author_kind,
+            source_messages=self._source_messages(
+                state, exclude_message_id=message.message_id
+            ),
         )
 
     def mark_response(
-        self, channel_id: int | str, *, source_author_kind: str = "human"
+        self,
+        channel_id: int | str,
+        *,
+        source_author_kind: str = "human",
+        close_source_window: bool = False,
     ) -> None:
         state = self._state(str(channel_id))
         now = self.clock()
@@ -329,6 +342,8 @@ class SocialPresence:
         state.engaged_until = now + self.engagement_seconds
         if source_author_kind == "ai_resident":
             state.consecutive_ai_turns += 1
+        if close_source_window:
+            state.buffer.clear()
         state.inflight_discretionary_task = None
 
     def clear_inflight(self, channel_id: int | str) -> None:
@@ -381,6 +396,14 @@ class SocialPresence:
             used += len(line)
         lines.reverse()
         return "\n".join(lines)
+
+    @staticmethod
+    def _source_messages(
+        state: _ChannelState, *, exclude_message_id: str
+    ) -> tuple[SocialMessage, ...]:
+        return tuple(
+            item for item in state.buffer if item.message_id != exclude_message_id
+        )
 
     def _observe_decision(self, decision: AttentionDecision) -> None:
         self.counters.prompt_tokens += decision.prompt_tokens

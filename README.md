@@ -154,6 +154,20 @@ may be heard in social rooms. Naomi ignores herself and unknown bot accounts.
 Approved residents still use the ambient gate even when they mention her, and
 `SOCIAL_AI_CHAIN_LIMIT` stops unattended AI reply loops until a human speaks.
 
+## Optional Everthread doorway
+
+Disco now has an injectable, transport-neutral text doorway for a connected
+Everthread runtime. Disco supplies exact ordered conversation sources, receives
+one accepted resident outcome, delivers that same text, and reports the Discord
+delivery result. Everthread remains the resident-content writer; Disco remains
+the Discord body.
+
+This doorway is not selected by environment configuration and is not active in
+the normal `run()` path. Standalone behavior is unchanged. Connected
+attachments, voice, commands, outreach, and discretionary ambient abstention
+remain later work; in particular, the bridge does not store `<NO_RESPONSE>` as
+an utterance or pretend ambient connected mode is ready.
+
 The discretionary budget refills gradually. As it drains, the cooldown rises;
 when empty, the room becomes addressed-only rather than muting the companion
 entirely. `/social-status` reports local gate calls,
