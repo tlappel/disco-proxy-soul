@@ -184,6 +184,15 @@ def social_ambient_notice(
     )
 
 
+def connected_source_notice(companion_name: str) -> str:
+    return (
+        f"**{companion_name} public continuity notice:** Messages in this configured "
+        "room may be admitted as bounded context when the resident is directly addressed. "
+        "Exact message words and neutral source details may reach Everthread and be retained "
+        "with public provenance. Discretionary ambient participation remains disabled."
+    )
+
+
 class _ResidentDiscordClient(discord.Client):
     def __init__(
         self, *args, resident_runtime: ResidentRuntime | None = None, **kwargs
@@ -252,6 +261,9 @@ def build_bot(
         companion_name=companion,
         judge=attention.judge if app.config.social_ambient_enabled else None,
         ambient_enabled=app.config.social_ambient_enabled,
+        source_capture_enabled=(
+            app.config.social_ambient_enabled or resident_runtime is not None
+        ),
         debounce_seconds=app.config.social_debounce_seconds,
         buffer_messages=app.config.social_buffer_messages,
         buffer_chars=app.config.social_buffer_chars,
@@ -291,23 +303,26 @@ def build_bot(
             f"{'enabled' if app.config.social_ambient_enabled else 'disabled'}"
         )
         print("Do not run two processes with the same Discord token.")
-        if app.config.social_ambient_enabled and app.config.social_channel_ids:
+        if social_presence.source_capture_enabled and app.config.social_channel_ids:
             if not app.persona.documents_by_mode("public"):
                 print(
-                    "[social] Ambient attention remains disabled: persona has no "
+                    "[social] Public source capture remains disabled: persona has no "
                     "public document layer"
                 )
-            elif not await attention.ready():
+            elif app.config.social_ambient_enabled and not await attention.ready():
                 print(
                     "[social] Ambient attention remains disabled: local Ollama "
                     f"model '{app.config.social_attention_model}' is unavailable"
                 )
             else:
-                provider_name, _ = app.config.social_ref()
-                notice = social_ambient_notice(
-                    companion,
-                    attention_model=app.config.social_attention_model,
-                    response_provider=provider_name,
+                notice = (
+                    connected_source_notice(companion)
+                    if resident_runtime is not None
+                    else social_ambient_notice(
+                        companion,
+                        attention_model=app.config.social_attention_model,
+                        response_provider=app.config.social_ref()[0],
+                    )
                 )
                 for channel_id in app.config.social_channel_ids:
                     if social_presence.notice_confirmed(channel_id):
@@ -322,7 +337,7 @@ def build_bot(
                     except Exception as exc:
                         print(
                             f"[social] Notice failed for channel {channel_id}; "
-                            f"ambient attention stays off there ({type(exc).__name__})"
+                            f"public source capture stays off there ({type(exc).__name__})"
                         )
                     else:
                         social_presence.confirm_notice(channel_id)
@@ -492,7 +507,7 @@ def build_bot(
                                 app,
                                 message,
                                 route,
-                                canonical_text=text or "[image]",
+                                canonical_text=message.content,
                                 surface=surface,
                                 disclosure_scope=disclosure_scope,
                             )
@@ -513,7 +528,8 @@ def build_bot(
                         except Exception:
                             pass
 
-                reply = sanitize_outgoing(reply)
+                if resident_runtime is None:
+                    reply = sanitize_outgoing(reply)
                 if route.discretionary:
                     social_presence.clear_inflight(channel_key)
                     if not reply.strip():
@@ -522,7 +538,14 @@ def build_bot(
                 sent_ids: list[str] = []
                 try:
                     if len(reply) <= 2000:
-                        sent = await message.reply(reply)
+                        sent = await message.reply(
+                            reply,
+                            **(
+                                {"allowed_mentions": discord.AllowedMentions.none()}
+                                if resident_runtime is not None
+                                else {}
+                            ),
+                        )
                         sent_ids.append(str(sent.id))
                     else:
                         chunks = [
@@ -530,9 +553,27 @@ def build_bot(
                         ]
                         for index, chunk in enumerate(chunks):
                             sent = (
-                                await message.reply(chunk)
+                                await message.reply(
+                                    chunk,
+                                    **(
+                                        {
+                                            "allowed_mentions": discord.AllowedMentions.none()
+                                        }
+                                        if resident_runtime is not None
+                                        else {}
+                                    ),
+                                )
                                 if index == 0
-                                else await message.channel.send(chunk)
+                                else await message.channel.send(
+                                    chunk,
+                                    **(
+                                        {
+                                            "allowed_mentions": discord.AllowedMentions.none()
+                                        }
+                                        if resident_runtime is not None
+                                        else {}
+                                    ),
+                                )
                             )
                             sent_ids.append(str(sent.id))
                 except asyncio.CancelledError:

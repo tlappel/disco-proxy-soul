@@ -218,5 +218,5 @@ def _everthread_turn(turn: RuntimeTurn) -> Any:
         person_label=turn.person_label,
         resident_label=turn.resident_label,
         sources=sources,
-        response_source_ref=SourceRef("discord.response", turn.response_source_id),
+        response_source_ref=SourceRef("disco.response", turn.response_source_id),
     )

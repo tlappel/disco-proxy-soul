@@ -8,7 +8,11 @@ from unittest.mock import MagicMock
 import pytest
 
 from disco_proxy_soul.discord_app.bot import _runtime_turn, build_bot
-from disco_proxy_soul.discord_app.social_presence import SocialMessage, SocialRoute
+from disco_proxy_soul.discord_app.social_presence import (
+    SocialMessage,
+    SocialPresence,
+    SocialRoute,
+)
 from disco_proxy_soul.resident_runtime import (
     EverthreadRuntimeAdapter,
     RuntimeDeliveryPreparation,
@@ -80,6 +84,74 @@ def test_public_runtime_turn_keeps_exact_ordered_sources_and_neutral_labels() ->
     assert {source.source_group_id for source in turn.sources} == {"discord-turn:30"}
     assert turn.sources[-1].text == "Dark wave makes melancholy feel architectural."
     assert "Hannah:" not in turn.sources[-1].text
+
+
+def test_connected_addressed_route_reaches_ordered_public_source_lane() -> None:
+    async def scenario() -> None:
+        presence = SocialPresence(
+            companion_name="Naomi",
+            judge=None,
+            ambient_enabled=False,
+            source_capture_enabled=True,
+            debounce_seconds=0,
+            buffer_messages=12,
+            buffer_chars=4000,
+            engagement_seconds=120,
+            cooldown_seconds=30,
+            budget_capacity=6,
+            budget_refill_per_hour=2,
+        )
+        presence.confirm_notice("20")
+        prior = SocialMessage(
+            guild_id="10",
+            channel_id="20",
+            channel_name="synthetic-public-room",
+            message_id="28",
+            author_id="200",
+            author_name="Hannah",
+            author_kind="ai_resident",
+            content="<@400> melancholy feels architectural.  ",
+            occurred_at=NOW,
+        )
+        current = SocialMessage(
+            guild_id="10",
+            channel_id="20",
+            channel_name="synthetic-public-room",
+            message_id="29",
+            author_id="100",
+            author_name="Travis",
+            author_kind="human",
+            content="<@400> Hannah nailed that description.",
+            occurred_at=NOW + timedelta(seconds=1),
+        )
+        assert await presence.consider(prior, direct_trigger=None) is None
+        route = await presence.consider(current, direct_trigger="mention")
+        assert route is not None
+        assert route.discretionary is False
+
+        app = SimpleNamespace(
+            persona=SimpleNamespace(persona_id="naomi", companion_name="Naomi")
+        )
+        discord_message = SimpleNamespace(
+            id=29,
+            created_at=current.occurred_at,
+            channel=SimpleNamespace(id=20, name="synthetic-public-room"),
+            author=SimpleNamespace(id=100, display_name="Travis"),
+        )
+        turn = _runtime_turn(
+            app,
+            discord_message,
+            route,
+            canonical_text=current.content,
+            surface="text",
+            disclosure_scope="public",
+        )
+        assert [source.text for source in turn.sources] == [
+            "<@400> melancholy feels architectural.  ",
+            "<@400> Hannah nailed that description.",
+        ]
+
+    asyncio.run(scenario())
 
 
 def test_private_runtime_turn_admits_only_current_source() -> None:
@@ -258,8 +330,9 @@ def test_discord_text_path_uses_injected_runtime_and_reports_delivery() -> None:
         channel = Channel()
         author = SimpleNamespace(id=100, bot=False, display_name="Travis")
 
-        async def reply(self, content):
+        async def reply(self, content, **kwargs):
             self.reply_text = content
+            self.reply_kwargs = kwargs
             return SimpleNamespace(id=901, content=content)
 
     config = MagicMock()
@@ -303,6 +376,9 @@ def test_discord_text_path_uses_injected_runtime_and_reports_delivery() -> None:
             assert client.voice_sessions._app is None
             await client.on_message(incoming)
             assert incoming.reply_text == "One accepted answer."
+            assert incoming.reply_kwargs["allowed_mentions"].to_dict() == (
+                pytest.importorskip("discord").AllowedMentions.none().to_dict()
+            )
             assert app.respond.call_count == 0
             assert len(runtime.turns) == 1
             assert runtime.prepared["outcome_id"] == "outcome-1"

@@ -162,6 +162,12 @@ one accepted resident outcome, delivers that same text, and reports the Discord
 delivery result. Everthread remains the resident-content writer; Disco remains
 the Discord body.
 
+Public source capture is separate from discretionary ambient participation.
+After the room notice succeeds, an addressed connected turn may carry the exact
+bounded messages that preceded it even though the local ambient speaking gate
+is disabled. Mention cleanup and gate sanitation affect rendering only, not the
+canonical source words handed to Everthread.
+
 This doorway is not selected by environment configuration and is not active in
 the normal `run()` path. Standalone behavior is unchanged. Connected
 attachments, voice, commands, outreach, and discretionary ambient abstention
