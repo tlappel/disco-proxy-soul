@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from datetime import UTC, datetime, timedelta
 
 from disco_proxy_soul.adapters.ollama_attention import AttentionDecision
 from disco_proxy_soul.discord_app.social_presence import (
@@ -39,6 +40,7 @@ def message(
         author_name=f"Human {number}",
         author_kind=author_kind,
         content=content,
+        occurred_at=datetime(2026, 8, 23, tzinfo=UTC) + timedelta(seconds=number),
     )
 
 
@@ -93,7 +95,23 @@ class SocialPresenceTests(unittest.IsolatedAsyncioTestCase):
         presence.confirm_notice("22")
         route = await presence.consider(message(2), direct_trigger=None)
         self.assertTrue(route.discretionary)
+        self.assertEqual(route.source_messages, ())
         self.assertEqual(calls, 1)
+
+    async def test_considered_route_carries_prior_admitted_sources_in_order(self):
+        async def judge(*args, **kwargs):
+            return AttentionDecision("consider", 1.0, "yes")
+
+        presence, _ = self.make_presence(judge=judge)
+        presence.confirm_notice("22")
+        await presence.consider(message(1), direct_trigger=None)
+        route = await presence.consider(message(2), direct_trigger=None)
+
+        self.assertEqual([item.message_id for item in route.source_messages], ["1"])
+
+        presence.mark_response("22", close_source_window=True)
+        next_route = await presence.consider(message(3), direct_trigger="mention")
+        self.assertEqual(next_route.source_messages, ())
 
     async def test_burst_only_latest_message_reaches_gate(self):
         release = asyncio.Event()
@@ -123,7 +141,9 @@ class SocialPresenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, 1)
         self.assertEqual(presence.counters.stale_decisions, 1)
 
-    async def test_soft_budget_preserves_direct_routes_after_discretionary_depletion(self):
+    async def test_soft_budget_preserves_direct_routes_after_discretionary_depletion(
+        self,
+    ):
         async def judge(*args, **kwargs):
             return AttentionDecision("consider", 1.0, "opening")
 
@@ -166,7 +186,9 @@ class SocialPresenceTests(unittest.IsolatedAsyncioTestCase):
             await first
         self.assertEqual(presence.counters.inflight_cancellations, 1)
 
-    async def test_direct_rate_limit_refills_without_touching_discretionary_budget(self):
+    async def test_direct_rate_limit_refills_without_touching_discretionary_budget(
+        self,
+    ):
         presence, clock = self.make_presence(ambient=False)
         self.assertTrue(presence.allow_direct("guest"))
         self.assertTrue(presence.allow_direct("guest"))
