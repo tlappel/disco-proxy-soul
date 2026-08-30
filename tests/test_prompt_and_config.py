@@ -12,6 +12,7 @@ from unittest.mock import patch
 from disco_proxy_soul.config import parse_model_ref, RuntimeConfig
 from disco_proxy_soul.memory.contracts import MemoryRecord
 from disco_proxy_soul.memory.facts import FactStore
+from disco_proxy_soul.models.factory import catalog_for
 from disco_proxy_soul.persona.loader import load_persona
 from disco_proxy_soul.prompt import build_system_prompt
 
@@ -27,6 +28,18 @@ class ConfigTests(unittest.TestCase):
     def test_parse_model_ref(self) -> None:
         self.assertEqual(parse_model_ref("grok-4.6", "xai"), ("xai", "grok-4.6"))
         self.assertEqual(parse_model_ref("openai:gpt-4.1", "xai"), ("openai", "gpt-4.1"))
+
+    def test_xai_catalog_includes_grok_420_chat_variants(self) -> None:
+        with patch.dict(os.environ, {"XAI_API_KEY": "test-key"}, clear=True):
+            catalog = catalog_for(RuntimeConfig.from_env())
+
+        self.assertEqual(
+            catalog["Grok 4.20 (non-reasoning)"],
+            "xai:grok-4.20-non-reasoning",
+        )
+        self.assertEqual(catalog["Grok 4.20 (reasoning)"], "xai:grok-4.20")
+        self.assertNotIn("Grok Build 0.1", catalog)
+        self.assertNotIn("Grok 4.20 Multi-Agent", catalog)
 
     def test_moments_threshold_prefers_new_name(self) -> None:
         env = {

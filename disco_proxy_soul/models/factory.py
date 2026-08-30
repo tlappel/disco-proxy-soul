@@ -60,6 +60,8 @@ def catalog_for(config: RuntimeConfig) -> dict[str, str]:
     catalog: dict[str, str] = {}
     if config.xai_api_key:
         catalog.update({
+            "Grok 4.20 (non-reasoning)": "xai:grok-4.20-non-reasoning",
+            "Grok 4.20 (reasoning)": "xai:grok-4.20",
             "Grok 4.6": "xai:grok-4.6",
             "Grok 4.5": "xai:grok-4.5",
             "Grok 4.3": "xai:grok-4.3",
