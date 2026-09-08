@@ -169,11 +169,13 @@ class PromptTests(unittest.TestCase):
                 persona,
                 facts,
                 journal_excerpt="private journal",
+                recalled=[MemoryRecord(summary="private recalled memory")],
                 cross_surface_recent="private cross-room line",
                 include_private_context=False,
             )
         self.assertIn("GUEST CONVERSATION", prompt)
         self.assertNotIn("private journal", prompt)
+        self.assertNotIn("private recalled memory", prompt)
         self.assertNotIn("private cross-room line", prompt)
         self.assertNotIn("secret", prompt)
 

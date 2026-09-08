@@ -82,6 +82,17 @@ correlation provenance. The current channel keeps its full rolling history;
 the configured partner also receives a bounded, labeled view of recent turns
 from other rooms plus relationship-scoped durable recall.
 
+`PARTNER_USER_ID` is also required for all control and memory slash commands.
+Without it, those commands deny access; legacy open conversation remains
+available. The configured partner can use private, ephemeral controls such as
+`/docs` and `/export` from a shared room. `/reflect` and `/recall` also generate
+a conversation reply, so they require a DM or a channel explicitly listed in
+`WATCH_CHANNEL_ID` or `ACTIVE_CHANNEL_IDS`. Social, addressed, ignored, and
+unlisted server channels are denied before private material is loaded. A thread
+must be explicitly configured by its own channel ID to permit these commands.
+Only designate channels as private when their Discord membership is appropriate
+for private replies.
+
 Legacy history and memory records have no trustworthy owner. They still load
 and remain available only in their original channel; they are never silently
 promoted into cross-surface continuity.

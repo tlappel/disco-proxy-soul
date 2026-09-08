@@ -98,7 +98,7 @@ def build_system_prompt(
         if extra:
             parts.append(extra)
 
-    if recalled:
+    if recalled and include_private_context:
         summaries = "\n".join(f"• {record.summary}" for record in recalled if record.summary)
         if summaries:
             if recall_source == "manual":

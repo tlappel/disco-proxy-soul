@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
 import unittest
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import discord
+from discord import app_commands
 
 from disco_proxy_soul.app import CompanionApp
+from disco_proxy_soul.config import RuntimeConfig
+from disco_proxy_soul.discord_app.bot import _CompanionCommandTree
+from disco_proxy_soul.discord_app.commands import register_commands
 from disco_proxy_soul.memory.contracts import MemoryRecord, Scope, TurnProvenance
 from disco_proxy_soul.memory.facts import FactStore
 from disco_proxy_soul.memory.file_backend import FileMemoryBackend
@@ -152,6 +160,29 @@ class ContinuityTests(unittest.IsolatedAsyncioTestCase):
         app._compress_locks = {}
         app._model_usage = {}
         return app
+
+    async def test_manual_recall_cache_is_private_even_for_partner_public_turn(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self.make_app(Path(tmp))
+            app.persona = PublicPersona()
+            await app.memory.save(
+                app.scope("11", PARTNER_ID),
+                MemoryRecord(summary="SYNTHETIC_PRIVATE_MEMORY", memory_id="private"),
+            )
+            await app.recall_command("11", "memory", PARTNER_ID)
+            cache = dict(app._cached_recall)
+            public = replace(
+                provenance("44", source_id="public-manual"), disclosure_scope="public"
+            )
+            await app.respond("44", "hello", recall_source="manual", provenance=public)
+            tier, request = app.models.requests[-1]
+            self.assertEqual(tier, "social")
+            self.assertNotIn("SYNTHETIC_PRIVATE_MEMORY", request.system)
+            self.assertEqual(request.tools, ())
+            self.assertEqual(app._cached_recall, cache)
+            private = provenance("11", source_id="private-manual")
+            await app.respond("11", "hello", recall_source="manual", provenance=private)
+            self.assertIn("SYNTHETIC_PRIVATE_MEMORY", app.models.requests[-1][1].system)
 
     async def test_partner_recents_cross_surfaces_with_labels_but_guest_does_not(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -497,6 +528,164 @@ class HistoryProvenanceTests(unittest.TestCase):
                 max_age_minutes=120,
             )
             self.assertEqual(recent, [])
+
+
+class PrivateCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.app = ContinuityTests().make_app(Path(self.temp.name))
+        # Use the real room policy with synthetic fixtures, no providers or tokens.
+        self.app.config.channel_mode = lambda channel: RuntimeConfig.channel_mode(
+            self.app.config, channel
+        )
+        self.app.config.ignored_channel_ids = (46,)
+        self.app.config.social_channel_ids = (44,)
+        self.app.config.addressed_channel_ids = (45,)
+        self.app.config.automatic_response_channel_ids = frozenset({11, 22})
+        self.app.catalog = {}
+        self.client = discord.Client(intents=discord.Intents.none())
+        self.addAsyncCleanup(self.client.close)
+        self.tree = _CompanionCommandTree(self.client, self.app)
+        register_commands(self.tree, self.app, SimpleNamespace())
+
+    def interaction(self, channel_id, user_id=PARTNER_ID, *, dm=False):
+        channel = SimpleNamespace(id=channel_id, name="synthetic-room", send=AsyncMock())
+        if channel_id in (22, 47):
+            # An explicitly private thread is allowed; an unlisted child of a
+            # private channel must not inherit that channel's authorization.
+            channel = MagicMock(spec=discord.Thread)
+            channel.id = channel_id
+            channel.name = "synthetic-thread"
+            channel.parent_id = 11
+        return SimpleNamespace(
+            id=12345,
+            guild_id=None if dm else 1,
+            guild=None if dm else SimpleNamespace(id=1),
+            channel_id=channel_id,
+            channel=channel,
+            user=SimpleNamespace(id=user_id, name="Synthetic", display_name="Synthetic"),
+            response=SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+
+    async def invoke(self, name, interaction, *args):
+        # Exercise the tree authorization followed by its registered callback.
+        if await self.tree.interaction_check(interaction):
+            await self.tree.get_command(name).callback(interaction, *args)
+
+    async def test_denied_cognition_commands_never_read_write_or_call_model(self):
+        requests = [("recall", "synthetic")]
+        requests.extend(
+            ("reflect", app_commands.Choice(name=topic, value=topic))
+            for topic in ("facts", "journal", "moments", "memories", "docs")
+        )
+        original_files = {
+            p.name: p.read_bytes() for p in Path(self.temp.name).iterdir()
+        }
+        with ExitStack() as stack:
+            for owner, attribute in (
+                (self.app, "recall_command"), (self.app, "list_memories"),
+                (self.app, "respond"), (self.app.facts, "format"),
+                (self.app.journal, "read_tail"), (self.app.moments, "read_tail"),
+                (self.app.persona, "documents_by_mode"),
+            ):
+                stack.enter_context(patch.object(
+                    owner, attribute, side_effect=AssertionError("private access before denial")
+                ))
+            for partner_id, actor in ((PARTNER_ID, PARTNER_ID), (PARTNER_ID, 99), (0, 99)):
+                self.app.config.partner_user_id = partner_id
+                for channel_id, dm in ((11, False), (22, False), (44, False),
+                                       (45, False), (46, False), (47, False), (48, True)):
+                    if partner_id == actor and (dm or channel_id in (11, 22)):
+                        continue
+                    for name, argument in requests:
+                        with self.subTest(partner=partner_id, actor=actor, room=channel_id, command=name):
+                            interaction = self.interaction(channel_id, actor, dm=dm)
+                            await self.invoke(name, interaction, argument)
+                            interaction.response.send_message.assert_awaited_once()
+                            self.assertTrue(interaction.response.send_message.await_args.kwargs["ephemeral"])
+                            interaction.response.defer.assert_not_awaited()
+                            interaction.followup.send.assert_not_awaited()
+                            interaction.channel.send.assert_not_awaited()
+        self.assertEqual(self.app.models.requests, [])
+        self.assertEqual(self.app._cached_recall, {})
+        self.assertEqual(original_files, {
+            p.name: p.read_bytes() for p in Path(self.temp.name).iterdir()
+        })
+
+    async def test_private_reflect_and_recall_preserve_context_and_all_reply_chunks(self):
+        record = MemoryRecord(summary="SYNTHETIC_PRIVATE_MEMORY", memory_id="private")
+        await self.app.memory.save(self.app.scope("11", PARTNER_ID), record)
+        for channel_id, dm in ((11, False), (22, False), (48, True)):
+            for name in ("reflect", "recall"):
+                for reply in ("Synthetic short reply", "Synthetic long reply. " * 200):
+                    with self.subTest(room=channel_id, command=name, length=len(reply)):
+                        self.app.models.response_text = reply
+                        interaction = self.interaction(channel_id, dm=dm)
+                        argument = (
+                            app_commands.Choice(name="journal", value="journal")
+                            if name == "reflect" else "synthetic"
+                        )
+                        await self.invoke(name, interaction, argument)
+                        tier, request = self.app.models.requests[-1]
+                        self.assertEqual(tier, "primary")
+                        self.assertIn("Private journal line.", request.system)
+                        self.assertTrue(request.tools)
+                        if name == "reflect":
+                            self.assertIn("Private journal line.", request.messages[-1].content)
+                            sends = interaction.followup.send.await_args_list
+                        else:
+                            self.assertIn("SYNTHETIC_PRIVATE_MEMORY", request.system)
+                            self.assertTrue(interaction.response.defer.await_args.kwargs["ephemeral"])
+                            self.assertTrue(interaction.followup.send.await_args.kwargs["ephemeral"])
+                            sends = interaction.channel.send.await_args_list
+                        self.assertEqual("".join(call.args[0] for call in sends), reply)
+                        self.assertTrue(all(len(call.args[0]) <= 2000 for call in sends))
+                        stored = self.app.history.get(str(channel_id))[-2:]
+                        self.assertEqual(len(stored), 2)
+                        self.assertTrue(all(item["provenance"]["disclosure_scope"] == "private" for item in stored))
+
+    async def test_guest_and_unconfigured_exports_and_mutations_stop_before_access(self):
+        for partner_id in (0, PARTNER_ID):
+            self.app.config.partner_user_id = partner_id
+            with patch.object(self.app, "export_paths", side_effect=AssertionError("export access")), \
+                 patch.object(self.app.history, "clear", side_effect=AssertionError("history mutation")):
+                for name in ("export", "clear"):
+                    interaction = self.interaction(44, 99)
+                    arguments = (app_commands.Choice(name="facts", value="facts"),) if name == "export" else ()
+                    await self.invoke(name, interaction, *arguments)
+                    self.assertTrue(interaction.response.send_message.await_args.kwargs["ephemeral"])
+                    interaction.followup.send.assert_not_awaited()
+
+    async def test_partner_can_export_ephemerally_from_shared_room(self):
+        interaction = self.interaction(44)
+        export = Path(self.temp.name) / "synthetic-export.json"
+        export.write_text('{"synthetic":"private export"}')
+        with patch.object(self.app, "export_paths", return_value={"facts": export}):
+            await self.invoke("export", interaction, app_commands.Choice(name="facts", value="facts"))
+        self.assertTrue(interaction.response.send_message.await_args.kwargs["ephemeral"])
+        sent = interaction.followup.send.await_args.kwargs
+        try:
+            self.assertTrue(sent["ephemeral"])
+            self.assertIn(b"private export", sent["file"].fp.read())
+        finally:
+            sent["file"].close()
+        interaction.channel.send.assert_not_awaited()
+
+    async def test_guild_id_controls_destination_and_provenance_when_cache_missing(self):
+        interaction = self.interaction(44)
+        interaction.guild = None
+        with patch.object(self.app, "recall_command", side_effect=AssertionError("private access")):
+            await self.invoke("recall", interaction, "synthetic")
+        self.assertTrue(interaction.response.send_message.await_args.kwargs["ephemeral"])
+        interaction.channel.send.assert_not_awaited()
+        private = self.interaction(11)
+        private.guild = None
+        await self.invoke("reflect", private, app_commands.Choice(name="journal", value="journal"))
+        stored = self.app.history.get("11")[-2]["provenance"]
+        self.assertEqual(stored["guild_id"], "1")
+        self.assertEqual(stored["surface"], "text")
 
 
 if __name__ == "__main__":

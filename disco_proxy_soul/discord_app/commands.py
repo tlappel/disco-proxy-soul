@@ -24,15 +24,16 @@ class _SocialPresence(Protocol):
 def _interaction_provenance(
     interaction: discord.Interaction, trigger: str
 ) -> TurnProvenance:
+    # Private cognition commands check their destination before building this.
     channel = interaction.channel
-    if interaction.guild is None:
+    if interaction.guild_id is None:
         surface = "dm"
     elif isinstance(channel, discord.Thread):
         surface = "thread"
     else:
         surface = "text"
     return TurnProvenance(
-        guild_id=str(interaction.guild.id) if interaction.guild else None,
+        guild_id=str(interaction.guild_id) if interaction.guild_id is not None else None,
         channel_id=str(interaction.channel_id),
         channel_name=getattr(channel, "name", None),
         surface=surface,
@@ -40,6 +41,7 @@ def _interaction_provenance(
         author_name=str(getattr(interaction.user, "display_name", interaction.user.name)),
         trigger=trigger,
         source_id=f"discord-interaction:{interaction.id}",
+        disclosure_scope="private",
     )
 
 
@@ -83,6 +85,20 @@ def register_commands(
         description="Control experimental single-speaker live voice chat",
     )
     tree.add_command(voice_chat)
+
+    async def private_cognition_destination(interaction: discord.Interaction) -> bool:
+        # Caller authorization is enforced by the command tree. It does not
+        # authorize sharing private cognition with everyone in the current room.
+        if interaction.guild_id is None or (
+            app.config.channel_mode(interaction.channel_id) == "private"
+        ):
+            return True
+        await interaction.response.send_message(
+            "This command uses private memories. Use it in our DM or a "
+            "configured private channel.",
+            ephemeral=True,
+        )
+        return False
 
     if social_presence is not None:
         @tree.command(
@@ -337,6 +353,8 @@ def register_commands(
     @tree.command(name="recall", description=f"Search {companion}'s memories")
     @app_commands.describe(query="What to search for")
     async def slash_recall(interaction: discord.Interaction, query: str) -> None:
+        if not await private_cognition_destination(interaction):
+            return
         await interaction.response.defer(ephemeral=True)
         records = await app.recall_command(
             str(interaction.channel_id), query, interaction.user.id
@@ -430,6 +448,8 @@ def register_commands(
     async def slash_reflect(
         interaction: discord.Interaction, topic: app_commands.Choice[str]
     ) -> None:
+        if not await private_cognition_destination(interaction):
+            return
         await interaction.response.defer()
         ckey = str(interaction.channel_id)
         if topic.value == "facts":

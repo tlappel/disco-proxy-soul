@@ -180,7 +180,7 @@ class CompanionApp:
         recalled = (
             await self._maybe_recall(scope, text) if include_private_context else None
         )
-        if recall_source == "manual":
+        if recall_source == "manual" and include_private_context:
             recalled = self._cached_recall.get(scope.storage_key, recalled)
         cross_surface_recent = (
             self._cross_surface_recent(scope) if include_private_context else ""

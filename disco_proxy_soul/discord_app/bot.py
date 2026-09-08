@@ -42,7 +42,14 @@ class _CompanionCommandTree(app_commands.CommandTree):
 
     async def interaction_check(self, interaction: discord.Interaction, /) -> bool:
         partner_user_id = self._companion_app.config.partner_user_id
-        if not partner_user_id or int(interaction.user.id) == partner_user_id:
+        if not partner_user_id:
+            await interaction.response.send_message(
+                "Control and memory commands need a configured partner. "
+                "Set PARTNER_USER_ID before using them.",
+                ephemeral=True,
+            )
+            return False
+        if int(interaction.user.id) == partner_user_id:
             return True
         companion = self._companion_app.persona.companion_name
         await interaction.response.send_message(
