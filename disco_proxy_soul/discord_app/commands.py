@@ -89,9 +89,14 @@ def register_commands(
     async def private_cognition_destination(interaction: discord.Interaction) -> bool:
         # Caller authorization is enforced by the command tree. It does not
         # authorize sharing private cognition with everyone in the current room.
-        if interaction.guild_id is None or (
-            app.config.channel_mode(interaction.channel_id) == "private"
-        ):
+        if interaction.guild_id is None:
+            # Guild-less also includes group DMs and DMs with other users for
+            # user-installed commands. Only Discord's BOT_DM context establishes
+            # our DM; absent or unknown context must fail closed.
+            allowed = interaction.context.dm_channel
+        else:
+            allowed = app.config.channel_mode(interaction.channel_id) == "private"
+        if allowed:
             return True
         await interaction.response.send_message(
             "This command uses private memories. Use it in our DM or a "

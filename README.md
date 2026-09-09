@@ -86,12 +86,15 @@ from other rooms plus relationship-scoped durable recall.
 Without it, those commands deny access; legacy open conversation remains
 available. The configured partner can use private, ephemeral controls such as
 `/docs` and `/export` from a shared room. `/reflect` and `/recall` also generate
-a conversation reply, so they require a DM or a channel explicitly listed in
+a conversation reply, so they require a DM with the bot or a server channel explicitly listed in
 `WATCH_CHANNEL_ID` or `ACTIVE_CHANNEL_IDS`. Social, addressed, ignored, and
 unlisted server channels are denied before private material is loaded. A thread
 must be explicitly configured by its own channel ID to permit these commands.
 Only designate channels as private when their Discord membership is appropriate
 for private replies.
+Group DMs and DMs with other users are denied for these two commands, including
+when user-installed commands are enabled. Guild-less interactions must carry
+Discord's bot-DM context; missing or unknown contexts are denied.
 
 Legacy history and memory records have no trustworthy owner. They still load
 and remain available only in their original channel; they are never silently

@@ -110,6 +110,9 @@ no cross-channel history or memory is inferred. Control and memory slash command
 require `PARTNER_USER_ID` and deny access while it is unset. `/reflect` and
 `/recall` generate private conversation replies: use them in the bot's DM or an
 explicitly configured private channel, not a shared or unlisted server channel.
+Group DMs and DMs with other users are also denied, including for user-installed
+commands. The bot requires Discord's bot-DM context for guild-less interactions;
+missing or unknown contexts are denied.
 Controls such as `/docs` and `/export` still return ephemeral results to the
 configured partner. To make additional private or low-traffic channels active
 without requiring a mention, add their IDs as a

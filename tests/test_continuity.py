@@ -561,6 +561,7 @@ class PrivateCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
         return SimpleNamespace(
             id=12345,
             guild_id=None if dm else 1,
+            context=app_commands.AppCommandContext(dm_channel=dm, guild=not dm),
             guild=None if dm else SimpleNamespace(id=1),
             channel_id=channel_id,
             channel=channel,
@@ -573,6 +574,139 @@ class PrivateCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
         # Exercise the tree authorization followed by its registered callback.
         if await self.tree.interaction_check(interaction):
             await self.tree.get_command(name).callback(interaction, *args)
+
+    def guildless_interaction(self, name, argument, *, context, channel_type, channel_id=48):
+        # Parse actual Discord payloads: DMChannel alone cannot distinguish a
+        # bot DM from a user-installed command in a DM with someone else.
+        user = {"id": str(PARTNER_ID), "username": "SyntheticPartner",
+                "discriminator": "0", "avatar": None}
+        other = {"id": "99", "username": "SyntheticOther",
+                 "discriminator": "0", "avatar": None}
+        bot = {"id": "400", "username": "SyntheticBot",
+               "discriminator": "0", "avatar": None, "bot": True}
+        self.client._connection.user = discord.ClientUser(
+            state=self.client._connection, data=bot
+        )
+        self.client.dispatch = MagicMock()
+        raw = {
+            "id": "123456789012345678", "application_id": "400",
+            "token": "synthetic-not-a-token", "type": 2, "version": 1,
+            "attachment_size_limit": 1000000,
+            "authorizing_integration_owners": {"1": str(PARTNER_ID)},
+            "user": user,
+            "channel": {
+                "id": str(channel_id), "type": channel_type,
+                "name": "synthetic-destination", "owner_id": str(PARTNER_ID),
+                "recipients": [user, other] if channel_type == 3 else
+                              [bot if context == 1 else other],
+            },
+            "data": {"name": name, "type": 1, "options": [
+                {"name": {"recall": "query", "reflect": "topic", "export": "data"}[name],
+                 "type": 3, "value": argument},
+            ]},
+        }
+        if context is not None:
+            raw["context"] = context
+        interaction = discord.Interaction(data=raw, state=self.client._connection)
+        interaction._cs_response = SimpleNamespace(
+            defer=AsyncMock(), send_message=AsyncMock()
+        )
+        interaction._cs_followup = SimpleNamespace(send=AsyncMock())
+        return interaction
+
+    async def test_shared_and_unknown_guildless_contexts_deny_before_access(self):
+        requests = [("recall", "synthetic")]
+        requests.extend(("reflect", topic) for topic in
+                        ("facts", "journal", "moments", "memories", "docs"))
+        original_files = {
+            p.name: p.read_bytes() for p in Path(self.temp.name).iterdir()
+        }
+        with ExitStack() as stack:
+            channel_send = stack.enter_context(patch.object(
+                discord.abc.Messageable, "send", new_callable=AsyncMock
+            ))
+            for owner, attribute in (
+                (self.app, "recall_command"), (self.app, "list_memories"),
+                (self.app, "respond"), (self.app.facts, "format"),
+                (self.app.journal, "read_tail"), (self.app.moments, "read_tail"),
+                (self.app.persona, "documents_by_mode"),
+            ):
+                stack.enter_context(patch.object(
+                    owner, attribute, side_effect=AssertionError("private access before denial")
+                ))
+            for context, channel_type in ((2, 3), (2, 1), (None, 1), (99, 1), (0, 1)):
+                # An allowlisted ID must not bypass the guild-less context gate.
+                for channel_id in (48, 11):
+                    for name, argument in requests:
+                        with self.subTest(context=context, channel_type=channel_type,
+                                          channel=channel_id, command=name, argument=argument):
+                            interaction = self.guildless_interaction(
+                                name, argument, context=context,
+                                channel_type=channel_type, channel_id=channel_id,
+                            )
+                            self.assertIsInstance(interaction.channel,
+                                discord.GroupChannel if channel_type == 3 else discord.DMChannel)
+                            await self.tree._call(interaction)
+                            interaction.response.send_message.assert_awaited_once()
+                            self.assertTrue(interaction.response.send_message.await_args.kwargs["ephemeral"])
+                            interaction.response.defer.assert_not_awaited()
+                            interaction.followup.send.assert_not_awaited()
+            channel_send.assert_not_awaited()
+        self.assertEqual(self.app.models.requests, [])
+        self.assertEqual(self.app._cached_recall, {})
+        self.assertEqual(original_files, {
+            p.name: p.read_bytes() for p in Path(self.temp.name).iterdir()
+        })
+
+    async def test_real_bot_dm_dispatch_preserves_private_context_and_split_replies(self):
+        await self.app.memory.save(self.app.scope("11", PARTNER_ID), MemoryRecord(
+            summary="SYNTHETIC_PRIVATE_MEMORY", memory_id="private"
+        ))
+        reply = "Synthetic private response. " * 200
+        self.app.models.response_text = reply
+        for name, argument in (("reflect", "journal"), ("recall", "synthetic")):
+            with self.subTest(command=name):
+                interaction = self.guildless_interaction(
+                    name, argument, context=1, channel_type=1
+                )
+                with patch.object(discord.abc.Messageable, "send", new_callable=AsyncMock) as send:
+                    await self.tree._call(interaction)
+                interaction.response.send_message.assert_not_awaited()
+                tier, request = self.app.models.requests[-1]
+                self.assertEqual(tier, "primary")
+                if name == "reflect":
+                    self.assertIn("Private journal line.", request.messages[-1].content)
+                    sends = interaction.followup.send.await_args_list
+                else:
+                    self.assertIn("SYNTHETIC_PRIVATE_MEMORY", request.system)
+                    self.assertTrue(interaction.followup.send.await_args.kwargs["ephemeral"])
+                    sends = send.await_args_list
+                self.assertGreater(len(sends), 1)
+                self.assertEqual("".join(call.args[0] for call in sends), reply)
+                self.assertTrue(all(len(call.args[0]) <= 2000 for call in sends))
+                for entry in self.app.history.get("48")[-2:]:
+                    self.assertEqual(entry["provenance"]["surface"], "dm")
+                    self.assertEqual(entry["provenance"]["disclosure_scope"], "private")
+
+    async def test_user_installed_shared_dm_exports_remain_ephemeral(self):
+        export = Path(self.temp.name) / "synthetic-export.json"
+        export.write_text('{"synthetic":"private export"}')
+        for channel_type in (1, 3):
+            with self.subTest(channel_type=channel_type):
+                interaction = self.guildless_interaction(
+                    "export", "facts", context=2, channel_type=channel_type
+                )
+                with patch.object(self.app, "export_paths", return_value={"facts": export}), \
+                     patch.object(discord.abc.Messageable, "send", new_callable=AsyncMock) as send:
+                    await self.tree._call(interaction)
+                self.assertTrue(interaction.response.send_message.await_args.kwargs["ephemeral"])
+                sent = interaction.followup.send.await_args.kwargs
+                try:
+                    self.assertTrue(sent["ephemeral"])
+                    self.assertIn(b"private export", sent["file"].fp.read())
+                finally:
+                    sent["file"].close()
+                send.assert_not_awaited()
 
     async def test_denied_cognition_commands_never_read_write_or_call_model(self):
         requests = [("recall", "synthetic")]
