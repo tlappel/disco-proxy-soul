@@ -920,8 +920,18 @@ class GladiaLiveAsyncTests(unittest.IsolatedAsyncioTestCase):
         # Hold the transition lock so stop queues first, then let ws_connect
         # return. connect now owns a bearer socket locally but cannot publish it.
         await session._state_lock.acquire()
-        stop_task = asyncio.create_task(session.stop(timeout=1))
-        await asyncio.sleep(0)
+        stop_waiting_for_state = asyncio.Event()
+        acquire_state = session._state_lock.acquire
+
+        async def observe_state_acquire():
+            stop_waiting_for_state.set()
+            return await acquire_state()
+
+        # wait_for's scheduling differs across Python versions. Observe the
+        # actual lock attempt instead of assuming one loop tick queues stop.
+        with patch.object(session._state_lock, "acquire", new=observe_state_acquire):
+            stop_task = asyncio.create_task(session.stop(timeout=1))
+            await asyncio.wait_for(stop_waiting_for_state.wait(), timeout=1)
         http.connect_release.set()
         await asyncio.sleep(0)
         self.assertIs(session._handshake_websocket, http.websocket)
