@@ -147,26 +147,28 @@ def _message_policy(
     if mode == "ignored":
         return None
     if mode == "unlisted":
-        # Preserve main's legacy fallback without opening every visible room to
-        # guests or adding the newer plain-name trigger outside an allowlist.
+        # Keep the legacy participation gate, but a partner's summons does not
+        # designate this destination private.
         if direct_trigger not in {"mention", "reply"}:
             return None
         if partner_configured and not is_partner:
             return None
-        return _MessagePolicy("immediate", "private", direct_trigger)
+        return _MessagePolicy("immediate", "public", direct_trigger)
     if mode == "private":
         if partner_configured and not is_partner:
             return None
         trigger = direct_trigger or ("active-channel" if private_active else None)
         if trigger is None:
             return None
-        return _MessagePolicy("immediate", "private", trigger)
+        return _MessagePolicy(
+            "immediate", "private" if partner_configured and is_partner else "public", trigger
+        )
     if mode == "addressed":
         if direct_trigger is None:
             return None
         return _MessagePolicy(
             "immediate",
-            "public" if partner_configured else "private",
+            "public",
             direct_trigger,
         )
     if mode == "social":
@@ -362,7 +364,24 @@ def build_bot(
         if author_kind is None:
             return
         mentioned = client.user is not None and client.user in message.mentions
-        is_dm = message.guild is None
+        channel = message.channel
+        # Uncached server messages retain their guild ID on PartialMessageable.
+        # Missing cache entries never turn server destinations into private DMs.
+        guild_id = (
+            message.guild.id if message.guild is not None
+            else getattr(channel, "guild_id", None)
+        )
+        # Gateway DM channels belong to this bot. Recipient data may be absent
+        # on the first message; when present it must describe this one peer.
+        is_dm = (
+            guild_id is None
+            and isinstance(channel, discord.DMChannel)
+            and channel.me == client.user
+            and (
+                not channel.recipients
+                or (len(channel.recipients) == 1 and channel.recipient.id == message.author.id)
+            )
+        )
         is_reply = (
             message.reference
             and message.reference.resolved
@@ -379,8 +398,12 @@ def build_bot(
 
         if is_dm:
             mode = "private"
-        else:
+        elif guild_id is not None:
             mode = app.config.channel_mode(int(message.channel.id))
+        else:
+            # Group/unknown private-channel shapes cannot inherit an allowlisted
+            # server channel's privacy or implicit DM participation.
+            mode = "unlisted"
         if author_kind == "ai_resident" and mode != "social":
             return
         if author_kind == "ai_resident":
@@ -415,7 +438,7 @@ def build_bot(
         if policy.route_kind == "social":
             route = await social_presence.consider(
                 SocialMessage(
-                    guild_id=str(message.guild.id) if message.guild else "",
+                    guild_id=str(guild_id) if guild_id is not None else "",
                     channel_id=str(message.channel.id),
                     channel_name=str(getattr(message.channel, "name", "?")),
                     message_id=str(message.id),
@@ -485,7 +508,7 @@ def build_bot(
                     else:
                         surface = "text"
                     provenance = TurnProvenance(
-                        guild_id=str(message.guild.id) if message.guild else None,
+                        guild_id=str(guild_id) if guild_id is not None else None,
                         channel_id=channel_key,
                         channel_name=getattr(message.channel, "name", None),
                         surface=surface,

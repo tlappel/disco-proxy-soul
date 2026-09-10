@@ -70,7 +70,7 @@ class DiscordRoutingTests(unittest.TestCase):
             private_active=False,
         )
         self.assertEqual(partner.route_kind, "immediate")
-        self.assertEqual(partner.disclosure_scope, "private")
+        self.assertEqual(partner.disclosure_scope, "public")
         self.assertIsNone(
             _message_policy(
                 mode="unlisted",
@@ -88,7 +88,7 @@ class DiscordRoutingTests(unittest.TestCase):
             private_active=False,
         )
         self.assertEqual(open_install.route_kind, "immediate")
-        self.assertEqual(open_install.disclosure_scope, "private")
+        self.assertEqual(open_install.disclosure_scope, "public")
         self.assertIsNone(
             _message_policy(
                 mode="unlisted",

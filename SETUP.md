@@ -105,14 +105,19 @@ PARTNER_USER_ID=paste-your-user-id-from-step-6
 ```
 
 `PARTNER_USER_ID` is what safely links your text, DM, and live-voice
-continuity. Without it, existing channel-local behavior remains in place and
-no cross-channel history or memory is inferred. Control and memory slash commands
+continuity. Without it, ordinary messages use public context only, including in
+DMs and configured private channels, and no cross-channel history or memory is
+inferred. Control and memory slash commands
 require `PARTNER_USER_ID` and deny access while it is unset. `/reflect` and
 `/recall` generate private conversation replies: use them in the bot's DM or an
 explicitly configured private channel, not a shared or unlisted server channel.
 Group DMs and DMs with other users are also denied, including for user-installed
 commands. The bot requires Discord's bot-DM context for guild-less interactions;
 missing or unknown contexts are denied.
+Ordinary mentions and replies in unlisted server rooms also use public context,
+even when you are the configured partner. To use private context, speak in the
+bot's DM or deliberately configure a private channel with appropriate membership.
+Private threads must be configured by their own IDs, not only their parent IDs.
 Controls such as `/docs` and `/export` still return ephemeral results to the
 configured partner. To make additional private or low-traffic channels active
 without requiring a mention, add their IDs as a

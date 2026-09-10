@@ -83,8 +83,10 @@ the configured partner also receives a bounded, labeled view of recent turns
 from other rooms plus relationship-scoped durable recall.
 
 `PARTNER_USER_ID` is also required for all control and memory slash commands.
-Without it, those commands deny access; legacy open conversation remains
-available. The configured partner can use private, ephemeral controls such as
+Without it, those commands deny access; ordinary conversation remains available
+using public context only. For ordinary messages, private context requires both
+the configured partner and a DM with the bot or an explicitly private server
+channel. The configured partner can use private, ephemeral controls such as
 `/docs` and `/export` from a shared room. `/reflect` and `/recall` also generate
 a conversation reply, so they require a DM with the bot or a server channel explicitly listed in
 `WATCH_CHANNEL_ID` or `ACTIVE_CHANNEL_IDS`. Social, addressed, ignored, and
@@ -108,10 +110,13 @@ Channel modes are explicit:
 | `SOCIAL_CHANNEL_IDS` | Public projection; direct address works, optional local ambient attention may join |
 | `ADDRESSED_CHANNEL_IDS` | Public projection; mention, reply, or clear name-address only |
 | `IGNORED_CHANNEL_IDS` | No response |
-| Unlisted server channel | Legacy fallback: configured partner mention or reply only |
+| Unlisted server channel | Public projection; configured partner mention or reply only (open to people when no partner is configured) |
 
-A channel ID may appear in only one mode. DMs from the configured partner are
-private. Public turns never receive private identity, facts, recall, cross-room
+A channel ID may appear in only one mode. DMs with the bot from the configured
+partner are private. Threads require their own explicit private-channel ID;
+they do not inherit private access from a parent. Missing guild cache entries,
+group DMs, and unknown channel shapes do not establish a private destination.
+Public turns never receive private identity, facts, recall, cross-room
 recents, relationship docs, presence docs, journal context, journal tools, or
 private/legacy channel history. Joined public exchanges retain a bounded local
 history but are never compressed into durable guest memory.

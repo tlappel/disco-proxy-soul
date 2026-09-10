@@ -371,6 +371,10 @@ def test_discord_text_path_uses_injected_runtime_and_reports_delivery() -> None:
         client = build_bot(app, resident_runtime=runtime)
         client._connection.user = SimpleNamespace(id=400)
         incoming = Message()
+        # Use the gateway's uncached bot-DM shape; guild=None alone is not a DM.
+        incoming.channel = pytest.importorskip("discord").DMChannel._from_message(
+            client._connection, 20
+        )
         try:
             assert client.tree.get_commands() == []
             assert client.voice_sessions._app is None
