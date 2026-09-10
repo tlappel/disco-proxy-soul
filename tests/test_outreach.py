@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from disco_proxy_soul.outreach import OutreachState
@@ -47,12 +48,14 @@ class OutreachTests(unittest.TestCase):
 
     def test_daily_max_and_silence(self) -> None:
         state = _state()
-        state.data["date"] = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d")
-        state.data["count"] = 2
-        self.assertEqual(state.cheap_block(), "daily max")
-        state.data["count"] = 0
-        state.data["last_activity"] = datetime.now(ZoneInfo("America/Chicago")).isoformat()
-        self.assertEqual(state.cheap_block(), "silence gate")
+        noon = datetime(2026, 8, 14, 12, 0, tzinfo=ZoneInfo("America/Chicago"))
+        with patch.object(state, "now", return_value=noon):
+            state.data["date"] = noon.strftime("%Y-%m-%d")
+            state.data["count"] = 2
+            self.assertEqual(state.cheap_block(), "daily max")
+            state.data["count"] = 0
+            state.data["last_activity"] = noon.isoformat()
+            self.assertEqual(state.cheap_block(), "silence gate")
 
     def test_eligible_when_quiet_long_enough(self) -> None:
         state = _state(quiet_start=0, quiet_end=0)
